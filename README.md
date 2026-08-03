@@ -4,8 +4,9 @@
 target, who operates as a coalition, and who really controls an issuer.** Built on Neo4j. Every
 answer cites an SEC accession number, and abstains when the data doesn't support one.
 
-Data: Schedule 13D/13G (beneficial ownership, 1994→present), Form 3/4/5 (insiders and directors),
-Form 13F (institutional holdings). Straight from EDGAR — no paid data vendor.
+Data: Schedule 13D/13G (beneficial ownership), Form 3/4/5 (insiders and directors), Form 13F
+(institutional holdings). Straight from EDGAR — no paid data vendor. Depth per layer, and what
+that does and doesn't support, is in [Honest limits](#honest-limits).
 
 ---
 
@@ -67,18 +68,33 @@ side by side and cross-checks that they agree (`make prove`).
 
 ```bash
 # 1. Install
-pip install -e ".[dev]"
-cp .env.sample .env         # fill in NEO4J_PASSWORD
+pip install -e ".[dev,llm]"   # [dev] alone omits openai, which the build needs
+cp .env.sample .env           # fill in NEO4J_PASSWORD and SEC_USER_AGENT
 
-# 2. Point at a graph. Either build it (hours — downloads from EDGAR):
-make build                  # dry-run: prints the full phased plan, writes nothing
+# 2. Check preconditions in seconds, before committing to a multi-hour build
+make preflight
+
+# 3. Point at a graph. Either build it (hours — downloads from EDGAR):
+make build                  # dry-run: prints the full phased plan + preflight, writes nothing
 make build-exec             # for real
 
-# 3. Ask it things
+# 4. Ask it things
 make demo                   # the activist convergence screen
 make prove                  # graph vs SQL, head to head
 make serve                  # curated MCP tools over stdio
 ```
+
+### What a build needs
+
+| | |
+| --- | --- |
+| **Neo4j** | **Enterprise** (or Docker `neo4j:enterprise`) **+ the GDS plugin**. Phase 0 runs `CREATE DATABASE`; the density gate runs `gds.wcc.write`. Community/Aura expose one database — use `make build-exec DB=neo4j`. |
+| **`SEC_USER_AGENT`** | **Required.** SEC fair access rejects generic agents with HTTP 403. The built-in default is a placeholder on the reserved domain `example.com`; `make preflight` refuses to start until you set a real contact string. |
+| **OpenAI key** | Only if `reference/control_figures.csv` is absent. Control extraction is the one LLM step; with the committed figures, a build needs no key at all. |
+| **Time & disk** | Several hours, ~20 GB. Dominated by the ~8,000-issuer 13D/G crawl and the 13F load, both bounded by SEC's 10 req/s ceiling. |
+
+`make preflight` checks every one of these. Each used to surface only after minutes-to-hours of
+crawling, as a generic non-zero exit from a child script.
 
 `make serve` exposes seven read-only tools to Claude Desktop or any MCP client (see
 [`.mcp.json`](.mcp.json)) — `activist_convergence`, `campaign_timeline`, `activist_coalition`,
@@ -127,6 +143,16 @@ Read these before demoing — they are part of what makes the rest credible.
   manager filing through seven affiliated vehicles). First-time activists are missed by design.
 - **Only 13D/13G dates are a time series.** Board and officer edges are a 2023–2026 keep-latest
   snapshot; 13F has a 2024 coverage step-up. Don't read trends into them.
+- **13D/13G history is capped, so "1994→present" holds only for light filers.** The crawl reads
+  each issuer's `filings.recent` (~1,000 most recent filings) and takes at most 40 Schedule
+  13D/G per subject. For a company that files hundreds of Form 4s a year, `recent` may reach back
+  only a year or two, and its older 13D/Gs are invisible. Small caps — where the control chains
+  are — get the full history; mega caps do not.
+- **Rebuilds drift, by construction.** The staging window resolves against the run date, and
+  EDGAR keeps accruing filings, so a rebuild today will not reproduce the figures below exactly.
+  New 13Ds can also *remove* a convergence hit, because the screen measures a total span rather
+  than a rolling window. Compare against `results/secgraph_freshness.json` (`as_of`) before
+  concluding something broke.
 - **Control chains are a small-cap instrument.** Every verified ≥50% chain in this dataset is a
   micro/nano-cap issuer. A real governance screen; not a large-cap feature.
 - **Board-interlock path *existence* is uninformative.** Measured: every well-connected pair links
@@ -139,9 +165,13 @@ Read these before demoing — they are part of what makes the rest credible.
 ## Development
 
 ```bash
-make test     # unit suite: fully mocked, no database needed
-make check    # lint + tests, as CI runs them
+make test        # unit suite: fully mocked, no database needed
+make check       # lint + tests (note: `make lint` rewrites source via ruff --fix)
+make preflight   # verify build preconditions against your Neo4j
 ```
+
+There is no CI. `make check` is the stand-in; `pre-commit install` gets ruff + gitleaks on
+commit.
 
 ## License
 
