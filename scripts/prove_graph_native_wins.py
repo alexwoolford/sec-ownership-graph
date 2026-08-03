@@ -2,11 +2,10 @@
 """
 The three-win graph-native proof: chain, path, coalition — head-to-head vs SQL.
 
-Consolidates the *superiority-tested* wins of the `secgraph` ownership graph
-(`results/pillar_superiority_verdict.md`) into one read-only demonstration. For each
-win it runs the graph traversal and the flat-SQL equivalent side by side, so the
-contrast — SQL plateaus at the fixed hop, the graph completes the variable-depth object —
-is shown live rather than asserted.
+Consolidates the *superiority-tested* wins of the `secgraph` ownership graph into one
+read-only demonstration. For each win it runs the graph traversal and the flat-SQL
+equivalent side by side, so the contrast — SQL plateaus at the fixed hop, the graph
+completes the variable-depth object — is shown live rather than asserted.
 
   1. CHAIN  — transitive control chains through verified >=50% 13D edges.
   2. PATH   — shortestPath between two boards via shared human directors.
@@ -98,8 +97,7 @@ def render_markdown(result: dict, generated: str) -> str:
         "# Graph-native proof: chain, path, coalition — head-to-head vs SQL",
         "",
         f"*Generated {generated} read-only against `secgraph`. Each win runs the graph",
-        "traversal and the flat-SQL equivalent side by side. Companion to",
-        "`pillar_superiority_verdict.md`.*",
+        "traversal and the flat-SQL equivalent side by side. Regenerate with `make prove`.*",
         "",
         "**How each leg is computed.** The graph leg executes a Cypher variable-length",
         "traversal *inside Neo4j* (`VarLengthExpand`) over materialized derived edges —",

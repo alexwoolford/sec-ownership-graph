@@ -1,8 +1,7 @@
 # Graph-native proof: chain, path, coalition — head-to-head vs SQL
 
 *Generated 2026-08-02 read-only against `secgraph`. Each win runs the graph
-traversal and the flat-SQL equivalent side by side. Companion to
-`pillar_superiority_verdict.md`.*
+traversal and the flat-SQL equivalent side by side. Regenerate with `make prove`.*
 
 **How each leg is computed.** The graph leg executes a Cypher variable-length
 traversal *inside Neo4j* (`VarLengthExpand`) over materialized derived edges —

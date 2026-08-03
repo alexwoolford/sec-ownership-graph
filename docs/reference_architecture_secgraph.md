@@ -37,10 +37,16 @@ application-side looping — so the advantage is that the traversal is one decla
 indexed pattern executed next to the data, not that the answer is unobtainable elsewhere.
 Overclaiming here is the fastest way to lose a technical audience.
 
-Evidence base: [`results/pillar_superiority_verdict.md`](../results/pillar_superiority_verdict.md),
-[`results/insider_interlock_proof.md`](../results/insider_interlock_proof.md),
-[`results/control_chain_analysis.md`](../results/control_chain_analysis.md), and the live
-head-to-head [`results/graph_native_proof.md`](../results/graph_native_proof.md).
+**How these three were chosen.** Each candidate was tested against a three-competitor bar: it had
+to beat vector/semantic retrieval, beat flat SQL on a warehouse, *and* be useful to a desk.
+Several plausible-looking candidates failed the SQL leg and were dropped from the pitch rather
+than dressed up — a stake-plus-board-seat overlap, a shared-top-holder set, and a 13G→13D flip
+screen are each reproducible with one `GROUP BY` and a self-join, so they are honestly SQL-class,
+not graph wins. Only the three above need a traversal whose depth the data decides.
+
+The live head-to-head is reproducible here: [`results/graph_native_proof.md`](../results/graph_native_proof.md)
+(regenerate with `make prove`), which runs the graph and flat-SQL legs side by side and reports
+whether they agree.
 
 ---
 
@@ -149,7 +155,10 @@ for the scripted walkthrough.
 
 - **CIK-keyed only.** Understates family/affiliate structure; deliberately conservative — no
   fuzzy name-matching that would inflate precision claims.
-- **No prediction / alpha claims.** Settled negative (`results/alpha_lens_backtest.md`).
+- **No prediction / alpha claims.** This was tested directly — a backtest looking for return
+  predictability around these ownership events — and came back null. Efficient markets; 13D
+  filings are public the moment they land. Treat this as a structural and temporal map, not a
+  signal.
 - **Temporal trust is layer-specific.** 13D `filing_date` is real 1994→present history (the
   "as of" source). `DIRECTOR_OF`/`OFFICER_OF` are a 2023–2026 keep-latest **snapshot**, not a
   time series. 13F `HOLDS` is quarterly with the 2024 coverage step-up excluded below the

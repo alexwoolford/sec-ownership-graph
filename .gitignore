@@ -3,6 +3,11 @@
 .env.*
 !.env.sample
 
+# Local AI-agent config and session state (machine-specific, may contain local paths).
+.claude/
+.cursor/
+.aider*
+
 # Python
 __pycache__/
 *.py[cod]

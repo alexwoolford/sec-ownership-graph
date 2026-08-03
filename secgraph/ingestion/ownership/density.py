@@ -1,10 +1,11 @@
 """
 Ownership-graph density measurement — the Phase-1 GO/NO-GO gate (read-only).
 
-The vignette (``results/insider_interlock_proof.md``) proved multi-hop board
-interlocks *exist* but only *extrapolated* their density from a 3.7% sample. This
-module measures the real thing on the full graph and decides whether the build
-is showable to a finance professional or still a vignette.
+An early hand-built vignette showed multi-hop board interlocks *exist*, but only
+*extrapolated* their density from a 3.7% sample. This module measures the real thing on
+the full graph and decides whether the build is showable to a finance professional or
+still a vignette — hence the gate: it exits non-zero rather than letting a too-sparse
+graph reach the downstream layers.
 
 Three measurements:
 

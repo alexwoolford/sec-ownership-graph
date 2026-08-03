@@ -5,12 +5,13 @@ This consolidates the *superiority-tested* wins of the `secgraph` ownership grap
 one read-only demonstration. Each win is run two ways in the same pass: the graph
 traversal, and the flat-SQL equivalent a warehouse would use — so the contrast ("SQL
 plateaus at the fixed hop; the graph completes the variable-depth object") is shown, not
-asserted. This is the reproducible core behind `results/pillar_superiority_verdict.md`.
+asserted. Emits ``results/graph_native_proof.md``.
 
-The bar every win here has already cleared (see `insider_interlock_proof.md`): beat vector
-RAG, beat SQL/warehouse, be valuable. The discriminating leg is SQL — **only variable-depth
-traversal beats a warehouse**; a fixed-hop self-join (stake+seat overlap, shared-holder set,
-dated flip) does not, and is deliberately excluded here.
+The bar every win here has already cleared: beat vector/semantic retrieval, beat
+SQL/warehouse, be valuable. The discriminating leg is SQL — **only variable-depth traversal
+beats a warehouse**; a fixed-hop self-join (stake+seat overlap, shared-holder set, dated
+13G→13D flip) does not, so those are honestly labelled SQL-class and deliberately excluded
+here rather than padded into the pitch.
 
 The three wins:
 

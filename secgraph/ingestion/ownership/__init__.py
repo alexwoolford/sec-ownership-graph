@@ -8,8 +8,8 @@ Builds a standalone, reproducible graph of CIK-keyed structured SEC filings:
 - Beneficial owners (Schedule 13D/13G → BENEFICIAL_OWNER_OF)
 - Institutional managers (Form 13F → HOLDS)
 
-Every artifact is (re)built from SEC source by the pipeline; nothing depends on
-files a prior project left on disk. See
-``.claude/plans/i-created-this-demo-nested-scott.md`` for the full design and
-``results/insider_interlock_proof.md`` for the empirical motivation.
+Every artifact is (re)built from SEC source by :mod:`~secgraph.ingestion.ownership.pipeline`;
+nothing depends on files left on disk by an earlier run. See
+``docs/reference_architecture_secgraph.md`` for the design and the honest limits, and
+``docs/demo_script_activist_desk.md`` for what the graph is actually for.
 """
