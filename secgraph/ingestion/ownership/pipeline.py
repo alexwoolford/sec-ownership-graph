@@ -25,6 +25,7 @@ the orchestrator prints the phased plan and writes nothing.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import subprocess
 import sys
@@ -342,8 +343,6 @@ def preflight_checks(
     if _CONTROL_FIGURES_CSV.exists():
         log.info(f"  ✓ control figures: {_CONTROL_FIGURES_CSV}")
     else:
-        import importlib.util
-
         if importlib.util.find_spec("openai") is None:
             failures.append(
                 f"no committed control figures at {_CONTROL_FIGURES_CSV} and the 'openai' "
