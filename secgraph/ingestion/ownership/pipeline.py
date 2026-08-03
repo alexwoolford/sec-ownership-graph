@@ -604,6 +604,38 @@ def collect_freshness(
     return manifest
 
 
+def provenance_line(manifest_path: Path | None = None) -> str:
+    """One markdown line stating what data a published figure came from.
+
+    Shared by the demo memos. Without it, a cloner whose numbers differ cannot tell expected
+    drift (a different ``--as-of``, a wider staging window) from a broken build.
+    """
+    import json
+
+    path = manifest_path or (Path("results") / "secgraph_freshness.json")
+    if not path.exists():
+        return (
+            f"> **Provenance unavailable** — `{path}` is missing, so the data window behind these "
+            "figures is unrecorded. Re-run the build to regenerate it."
+        )
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return f"> **Provenance unreadable** — `{path}` could not be parsed."
+
+    prov = manifest.get("provenance") or {}
+    staged = (prov.get("staged_periods") or {}).get("form345") or []
+    window = f"{staged[-1]}–{staged[0]}" if staged else "unknown"
+    return (
+        f"> **Provenance.** Data as of `{manifest.get('as_of', 'unknown')}` · "
+        f"staging pinned to `{prov.get('as_of_requested') or 'not pinned'}` · "
+        f"Form 3/4/5 window `{window}` ({len(staged)} quarters) · "
+        f"control figures from `{(prov.get('control_figures') or {}).get('source', 'unknown')}`. "
+        "Figures below are specific to this window: a rebuild with a different `--as-of` will "
+        "legitimately differ."
+    )
+
+
 def write_freshness_manifest(
     driver, database: str, out_path: Path, provenance: dict[str, Any] | None = None
 ) -> dict[str, Any]:
