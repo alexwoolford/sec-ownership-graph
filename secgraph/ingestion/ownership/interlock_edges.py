@@ -53,7 +53,11 @@ _COMPUTE_QUERY = f"""
       AND {_HUMAN_DIRECTOR_FILTER}
       AND {_not_fund_company("a")} AND {_not_fund_company("b")}
       AND i.cik IS NOT NULL
-    WITH a, b, collect(DISTINCT i.cik) AS via
+    // Sort before collecting: `collect()` order is unspecified, and via_ciks is then truncated
+    // to _MAX_VIA_CIKS *and* rendered as "the" bridging director (via_ciks[0]) by the proof and
+    // intelligence layers. Unordered, that name changed between runs on an identical graph.
+    WITH a, b, i.cik AS cik ORDER BY cik
+    WITH a, b, collect(DISTINCT cik) AS via
     RETURN elementId(a) AS a_eid, elementId(b) AS b_eid,
            size(via) AS director_count, via[0..{_MAX_VIA_CIKS}] AS via_ciks
 """
