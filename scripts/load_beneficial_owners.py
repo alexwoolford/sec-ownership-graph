@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import sys
+from datetime import date
 
 from secgraph.cli import (
     add_database_argument,
@@ -48,7 +49,21 @@ def main():
         help="Also re-fetch cached SGML headers (rarely needed — headers are "
         "immutable by accession). Implies a full re-crawl.",
     )
+    parser.add_argument(
+        "--as-of",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Only crawl filings dated on or before this date. Without it the crawl picks up "
+        "whatever EDGAR has published by now, so a rebuild cannot reproduce an earlier one.",
+    )
     args = parser.parse_args()
+
+    if args.as_of:
+        try:
+            date.fromisoformat(args.as_of)
+        except ValueError:
+            print(f"ERROR: --as-of {args.as_of!r} must be YYYY-MM-DD")
+            sys.exit(1)
 
     logger = setup_logging("load_beneficial_owners", execute=args.execute)
     logger.info("=" * 80)
@@ -66,6 +81,7 @@ def main():
             refresh=args.refresh or args.refresh_headers,
             refresh_headers=args.refresh_headers,
             max_filings_per_subject=args.max_filings,
+            as_of=args.as_of,
             execute=args.execute,
             logger_instance=logger,
         )

@@ -83,6 +83,7 @@ def _steps(
     quarters_345: int = _QUARTERS_345,
     quarters_13f: int = _QUARTERS_13F,
     extract_control: bool = False,
+    as_of: str | None = None,
 ) -> list[Step]:
     """The full phased plan. ``--database`` is threaded onto every DB-touching child.
 
@@ -91,8 +92,12 @@ def _steps(
 
     ``extract_control`` forces the LLM extraction step even when committed control figures
     exist — use it to fill in filings newer than the CSV.
+
+    ``as_of`` pins every acquisition step to a date, so the staged windows and the crawled
+    filings match a reference build instead of drifting forward with EDGAR.
     """
     db = ["--database", database]
+    as_of_args = ["--as-of", as_of] if as_of else []
     plan: list[Step] = [
         # Phase 0 — standalone database + constraints (cold-start only).
         Step(
@@ -113,6 +118,7 @@ def _steps(
             "Phase 1 stage — download Form 3/4/5 bulk datasets",
             adds_execute=False,
             extra_args=["--form", "345", "--quarters", str(quarters_345)]
+            + as_of_args
             + (["--refresh"] if refresh else []),
         ),
         Step(
@@ -139,7 +145,7 @@ def _steps(
         Step(
             "load_beneficial_owners.py",
             "Phase 2a — load BeneficialOwner nodes + 13D/13G BENEFICIAL_OWNER_OF edges",
-            extra_args=[*db] + (["--refresh"] if refresh else []),
+            extra_args=[*db] + as_of_args + (["--refresh"] if refresh else []),
         ),
         # Control figures on 13D edges (needs Phase 2a). Two ways in:
         #
@@ -192,6 +198,7 @@ def _steps(
             "Phase 2b stage — download FTD datasets (for the CUSIP crosswalk)",
             adds_execute=False,
             extra_args=["--form", "ftd", "--quarters", str(_QUARTERS_FTD)]
+            + as_of_args
             + (["--refresh"] if refresh else []),
         ),
         Step(
@@ -204,6 +211,7 @@ def _steps(
             "Phase 2b stage — download Form 13F datasets",
             adds_execute=False,
             extra_args=["--form", "13f", "--quarters", str(quarters_13f)]
+            + as_of_args
             + (["--refresh"] if refresh else []),
         ),
         Step(
@@ -521,6 +529,7 @@ def build_secgraph(
     quarters_345: int = _QUARTERS_345,
     quarters_13f: int = _QUARTERS_13F,
     extract_control: bool = False,
+    as_of: str | None = None,
     logger_instance: logging.Logger | None = None,
 ) -> bool:
     """Run the phased secgraph build (or refresh). Returns True on success.
@@ -537,6 +546,7 @@ def build_secgraph(
         quarters_345=quarters_345,
         quarters_13f=quarters_13f,
         extract_control=extract_control,
+        as_of=as_of,
     )
 
     if not execute:

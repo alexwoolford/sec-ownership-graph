@@ -106,6 +106,41 @@ class TestPeriodKeys:
         }
         assert bulk_datasets.select_quarters(available, 2) == ["2025q1", "2024q4"]
 
+    # --- as-of pinning ------------------------------------------------------------------- #
+    # "Most recent N" resolves against the run date, so it silently means something different
+    # every quarter. --as-of is what makes a rebuild select the same windows.
+
+    @pytest.mark.parametrize(
+        "period,expected",
+        [
+            ("2025q1", "2025-03-31"),
+            ("2026q2", "2026-06-30"),
+            ("2024q4", "2024-12-31"),
+            ("01sep2025-30nov2025", "2025-11-30"),  # range keys resolve to their END
+            ("202606a", "2026-06-15"),  # FTD first half
+            ("202606b", "2026-06-30"),  # FTD second half
+            ("202602b", "2026-02-28"),  # month-length aware
+        ],
+    )
+    def test_period_end_date(self, period, expected):
+        assert bulk_datasets.period_end_date(period).isoformat() == expected
+
+    def test_select_quarters_respects_as_of(self):
+        available = {"2026q2": "u", "2026q1": "u", "2025q4": "u", "2025q3": "u"}
+        # Without a cutoff the newest quarter wins; with one, everything after it is excluded.
+        assert bulk_datasets.select_quarters(available, 2) == ["2026q2", "2026q1"]
+        assert bulk_datasets.select_quarters(available, 2, "2026-03-31") == ["2026q1", "2025q4"]
+
+    def test_select_quarters_as_of_accepts_date_object(self):
+        from datetime import date
+
+        available = {"2026q2": "u", "2026q1": "u"}
+        assert bulk_datasets.select_quarters(available, 5, date(2026, 3, 31)) == ["2026q1"]
+
+    def test_select_quarters_as_of_before_all_data_returns_empty(self):
+        available = {"2026q2": "u", "2026q1": "u"}
+        assert bulk_datasets.select_quarters(available, 5, "2020-01-01") == []
+
     def test_daterange_sorts_by_end_date(self):
         available = {
             "01mar2025-31may2025": "u1",
@@ -172,6 +207,35 @@ class TestIterTsvRows:
             "2024q4_form345.zip",
             "2024q3_form345.zip",
         ]
+
+    def test_staged_zip_paths_limit_and_as_of(self, tmp_path, monkeypatch):
+        """The unbounded glob is a reproducibility hazard: a machine that once staged extra
+        quarters loads them all, so the same command builds a different graph."""
+        cache = tmp_path / "form345"
+        cache.mkdir()
+        for period in ("2024q3", "2024q4", "2025q1", "2025q2"):
+            (cache / f"{period}_form345.zip").write_bytes(b"x")
+        monkeypatch.setattr(bulk_datasets, "get_ownership_data_dir", lambda subdir: cache)
+
+        assert len(bulk_datasets.staged_zip_paths("form345")) == 4  # unbounded default
+        assert [p.name for p in bulk_datasets.staged_zip_paths("form345", limit=2)] == [
+            "2025q2_form345.zip",
+            "2025q1_form345.zip",
+        ]
+        assert [p.name for p in bulk_datasets.staged_zip_paths("form345", as_of="2024-12-31")] == [
+            "2024q4_form345.zip",
+            "2024q3_form345.zip",
+        ]
+
+    def test_staged_zip_paths_keeps_unparseable_names(self, tmp_path, monkeypatch):
+        """An unrecognised filename must not be silently dropped from the load."""
+        cache = tmp_path / "form345"
+        cache.mkdir()
+        (cache / "2025q1_form345.zip").write_bytes(b"x")
+        (cache / "weird_form345.zip").write_bytes(b"x")
+        monkeypatch.setattr(bulk_datasets, "get_ownership_data_dir", lambda subdir: cache)
+        names = {p.name for p in bulk_datasets.staged_zip_paths("form345", as_of="2025-12-31")}
+        assert names == {"2025q1_form345.zip", "weird_form345.zip"}
 
 
 # --------------------------------------------------------------------------- #
@@ -373,6 +437,45 @@ class TestBeneficialHeader:
         assert by_owner["0001822844"]["resolved"] is True
         assert "some-person-group" in by_owner  # name-slug fallback
         assert by_owner["some-person-group"]["resolved"] is False
+
+    # --- as-of pinning of the 13D/G crawl ------------------------------------------------- #
+
+    def test_filings_as_of_filters_by_date(self):
+        filings = [
+            {"accession": "a", "form": "SC 13D", "date": "2026-07-01"},
+            {"accession": "b", "form": "SC 13D", "date": "2026-06-30"},
+            {"accession": "c", "form": "SC 13D", "date": "2025-01-15"},
+        ]
+        kept = beneficial.filings_as_of(filings, "2026-06-30")
+        assert [f["accession"] for f in kept] == ["b", "c"]  # boundary is inclusive
+
+    def test_filings_as_of_none_is_passthrough(self):
+        filings = [{"accession": "a", "form": "SC 13D", "date": "2026-07-01"}]
+        assert beneficial.filings_as_of(filings, None) == filings
+
+    @pytest.mark.parametrize("bad_date", ["", None, "2026", "not-a-date"])
+    def test_filings_as_of_keeps_unparseable_dates(self, bad_date):
+        """Dropping a filing over a formatting quirk would lose a real edge; parse_header
+        supplies the authoritative date downstream."""
+        filings = [{"accession": "a", "form": "SC 13D", "date": bad_date}]
+        assert beneficial.filings_as_of(filings, "2026-06-30") == filings
+
+    def test_as_of_filter_precedes_the_per_subject_cap(self, monkeypatch):
+        """Order matters: filtering *after* the 40-filing truncation would return fewer than 40
+        filings for an active subject, so a pinned rebuild would see less history than an
+        unpinned one."""
+        # 45 filings, the 10 newest of which are after the cutoff.
+        filings = [
+            {"accession": f"new-{i}", "form": "SC 13D", "date": "2026-07-01"} for i in range(10)
+        ] + [{"accession": f"old-{i}", "form": "SC 13D", "date": "2025-01-15"} for i in range(35)]
+
+        monkeypatch.setattr(beneficial, "fetch_13dg_accessions", lambda *a, **k: filings)
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+
+        rows = beneficial._crawl_subject("0001326380", Path("/tmp"), False, False, 40, "2026-06-30")
+        # All 35 in-window filings survive; none of the 10 out-of-window ones do.
+        assert len(rows) == 35
+        assert all(r["accession_number"].startswith("old-") for r in rows)
 
     def test_isolated_fetch_failure_is_tolerated(self, monkeypatch):
         """One unreachable subject must not lose a multi-hour crawl."""

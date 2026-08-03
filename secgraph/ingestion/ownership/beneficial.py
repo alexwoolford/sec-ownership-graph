@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from pathlib import Path
 
 from secgraph.core.config.constants import BATCH_SIZE_LARGE
@@ -112,12 +113,40 @@ def _classify_filing(form_type: str) -> str:
     return "13D" if "13D" in form_type.upper() else "13G"
 
 
+def filings_as_of(filings: list[dict], as_of: str | None) -> list[dict]:
+    """Drop filings dated after ``as_of`` (a ``YYYY-MM-DD`` string).
+
+    Applied *before* the per-subject cap, not after: filtering a list that has already been
+    truncated to the 40 most recent would silently return fewer than 40 filings for any active
+    subject, so a pinned rebuild would see less history than an unpinned one.
+
+    A filing with a missing or malformed date is kept — dropping it would lose a real edge over
+    a formatting quirk, and ``parse_header`` supplies the authoritative date downstream.
+    """
+    if not as_of:
+        return filings
+    kept = []
+    for filing in filings:
+        raw = (filing.get("date") or "").strip()
+        try:
+            # Parse rather than compare strings: "not-a-date" is also 10 characters, so a
+            # length check would treat it as a real date and silently drop the filing.
+            parsed = date.fromisoformat(raw)
+        except ValueError:
+            kept.append(filing)
+            continue
+        if parsed.isoformat() <= as_of:
+            kept.append(filing)
+    return kept
+
+
 def _crawl_subject(
     subject_cik: str,
     cache_dir: Path,
     refresh_index: bool,
     refresh_headers: bool,
     max_filings_per_subject: int,
+    as_of: str | None = None,
 ) -> list[dict]:
     """Crawl one subject's 13D/G headers → its BENEFICIAL_OWNER_OF edge rows.
 
@@ -129,9 +158,10 @@ def _crawl_subject(
     a filter change, e.g. picking up the new ``SCHEDULE 13D/G`` form codes);
     ``refresh_headers`` re-fetches the SGML headers, which are immutable by
     accession and so almost never need refreshing — newly-discovered accessions
-    are fetched regardless.
+    are fetched regardless. ``as_of`` pins the crawl to filings on or before a date.
     """
     filings = fetch_13dg_accessions(subject_cik, cache_dir, refresh=refresh_index)
+    filings = filings_as_of(filings, as_of)
     rows: list[dict] = []
     for filing in filings[:max_filings_per_subject]:
         header = fetch_submission_header(
@@ -182,6 +212,7 @@ def build_edge_rows(
     refresh: bool = False,
     refresh_headers: bool = False,
     max_filings_per_subject: int = 40,
+    as_of: str | None = None,
     log: logging.Logger | None = None,
 ) -> list[dict]:
     """Crawl 13D/G headers for each subject → BENEFICIAL_OWNER_OF edge rows.
@@ -209,7 +240,13 @@ def build_edge_rows(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
-                _crawl_subject, cik, cache_dir, refresh, refresh_headers, max_filings_per_subject
+                _crawl_subject,
+                cik,
+                cache_dir,
+                refresh,
+                refresh_headers,
+                max_filings_per_subject,
+                as_of,
             ): cik
             for cik in subject_ciks
         }
@@ -250,6 +287,7 @@ def load_beneficial_owners(
     refresh_headers: bool = False,
     max_filings_per_subject: int = 40,
     batch_size: int = BATCH_SIZE_LARGE,
+    as_of: str | None = None,
     execute: bool = False,
     logger_instance: logging.Logger | None = None,
 ) -> dict:
@@ -283,6 +321,7 @@ def load_beneficial_owners(
         refresh=refresh,
         refresh_headers=refresh_headers,
         max_filings_per_subject=max_filings_per_subject,
+        as_of=as_of,
         log=log,
     )
     if subject_ciks and not rows:

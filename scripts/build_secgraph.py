@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 from secgraph.cli import (
@@ -70,6 +71,15 @@ def main() -> int:
         help=f"Quarters of Form 13F bulk data to stage (default: {DEFAULT_QUARTERS_13F}).",
     )
     parser.add_argument(
+        "--as-of",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Pin every acquisition step to this date: bulk quarters ending on or before it, and "
+        "13D/G filings dated on or before it. Without it, 'most recent N quarters' resolves "
+        "against today, so two builds a week apart cannot agree. Required to reproduce a "
+        "reference build.",
+    )
+    parser.add_argument(
         "--extract-control",
         action="store_true",
         help="Run LLM control extraction even when reference/control_figures.csv exists, to fill "
@@ -82,6 +92,13 @@ def main() -> int:
         "figures, disk) and exit. Writes nothing and makes no network calls.",
     )
     args = parser.parse_args()
+
+    if args.as_of:
+        try:
+            date.fromisoformat(args.as_of)
+        except ValueError:
+            print(f"ERROR: --as-of {args.as_of!r} must be YYYY-MM-DD")
+            return 1
 
     logger = setup_logging("build_secgraph", execute=args.execute)
     database = args.database or "secgraph"
@@ -110,6 +127,7 @@ def main() -> int:
             quarters_345=args.quarters_345,
             quarters_13f=args.quarters_13f,
             extract_control=args.extract_control,
+            as_of=args.as_of,
             logger_instance=logger,
         )
     finally:
