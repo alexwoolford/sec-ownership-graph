@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "secgraph-ownership": {
+      "command": "python",
+      "args": ["scripts/serve_ownership_mcp.py", "--database", "secgraph"],
+      "env": {}
+    }
+  }
+}

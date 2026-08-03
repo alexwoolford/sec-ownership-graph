@@ -1,0 +1,115 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secgraph"
+version = "0.1.0"
+description = "A graph-native SEC ownership-relationship graph in Neo4j: activist coalitions, control chains, and board interlocks from 13D/13G/Form 345/13F filings"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    # Core — Neo4j driver + GDS client (WCC/centrality over derived projections)
+    "neo4j>=5.18.1,<6.0.0",
+    "graphdatascience>=1.0.0,<2.0.0",
+
+    # The serving surface: curated read-only MCP tools (scripts/serve_ownership_mcp.py)
+    "fastmcp>=2.10.5,<3",
+
+    # Configuration with type validation
+    "pydantic>=2.0.0,<3.0.0",
+    "pydantic-settings>=2.0.0,<3.0.0",
+
+    # Schema contract (schema/graph_schema.yaml is the single source of truth)
+    "pyyaml>=6.0.0,<7.0.0",
+
+    # EDGAR HTTP client + bulk dataset staging
+    "requests>=2.31.0,<3.0.0",
+    "tenacity>=8.0.0,<9.0.0",
+
+    # Data handling
+    "pandas>=2.0.0,<3.0.0",
+    "tqdm>=4.65.0,<5.0.0",
+]
+
+[project.optional-dependencies]
+# Only ONE step needs an LLM: extract_control_edges.py reads percent-of-class and
+# control-vs-stake figures out of Schedule 13D cover-page prose. Every traversal and every
+# served answer is deterministic Cypher with no model in the loop — so this is optional, and
+# a pre-built graph can be queried without it.
+llm = [
+    "openai>=1.0.0,<2.0.0",
+]
+dev = [
+    "ruff>=0.8.0,<1.0.0",
+    "mypy>=1.5.0,<2.0.0",
+    "pytest>=7.4.0,<9.0.0",
+    "pytest-asyncio>=0.23.0,<1.0.0",
+    "pytest-cov>=4.1.0,<7.0.0",
+    "pytest-mock>=3.14.0,<4.0.0",
+    "pre-commit>=3.0.0,<5.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/alexwoolford/sec-ownership-graph"
+
+[tool.setuptools]
+packages = ["secgraph"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E203",  # Conflicts with the formatter's slice style
+    "E501",  # Line too long (handled by the formatter)
+    "E402",  # Module level import not at top (sometimes intentional)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E402"]  # Scripts often have late imports after setup
+
+[tool.ruff.lint.isort]
+known-first-party = ["secgraph"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "neo4j.*",
+    "graphdatascience.*",
+    "openai.*",
+    "tqdm.*",
+    "fastmcp.*",
+    "mcp.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v"
+asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests (fast, fully mocked, no external services)",
+    "integration: Integration tests (require a live Neo4j)",
+    "contract: Contract tests asserting live graph state (opt in with --run-contract)",
+]

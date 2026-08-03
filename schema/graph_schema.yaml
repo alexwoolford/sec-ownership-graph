@@ -1,0 +1,204 @@
+# =============================================================================
+# Graph Schema Contract — Single Source of Truth
+# =============================================================================
+#
+# The canonical schema for the SEC ownership-relationship graph (`secgraph`). Documentation and
+# validation both derive from this file, and `tests/unit/test_schema_consistency.py` scans every
+# .py file to fail the build if any Cypher references a label or relationship type not declared
+# here. So: declare it here FIRST, then write the query.
+#
+# Four node labels, nine relationship types. Everything joins on hard keys (CIK / CUSIP-9),
+# never on fuzzy name matching.
+#
+# Derived (materialized) relationships — computed, not filed:
+#   SHARES_DIRECTOR  two boards share >=1 human director        (materialize_interlock_edges.py)
+#   CONTROLS         verified >=50% 13D stake                   (materialize_control_edges.py)
+#   SAME_ENTITY_AS   CIK identity bridge; makes chains transitive (same script)
+#   CO_TARGETS       two 13D filers co-target >=2 issuers       (materialize_cotarget_edges.py)
+#
+# How to regenerate docs:
+#   python scripts/generate_schema_docs.py --execute
+
+# ---------------------------------------------------------------------------
+# Node labels, unique keys, required & optional properties with types
+# ---------------------------------------------------------------------------
+nodes:
+  Company:
+    unique_key: cik
+    description: >
+      A public issuer that files with the SEC. The universe is SEC filers with a ticker
+      (see scripts/load_company_universe.py); every ownership edge attaches to one of these.
+      NOTE: this graph carries no market-cap, revenue or financial data — results cannot be
+      ranked by materiality. See docs/reference_architecture_secgraph.md "Honest limits".
+    required_properties:
+      cik: {type: String, description: "SEC Central Index Key — the hard key everything joins on"}
+      name: {type: String, description: "Company legal name"}
+      loaded_at: {type: DateTime, description: "When node was loaded"}
+    optional_properties:
+      ticker: {type: String, description: "Stock ticker symbol"}
+      sector: {type: String, description: "Business sector derived from the SIC code"}
+      sic_code: {type: String, description: "SIC industry code (from EDGAR)"}
+      state_of_incorp: {type: String, description: "State/country of incorporation (from EDGAR)"}
+      ownership_component: {type: Long, description: "WCC component id over the ownership-interlock graph (GDS)"}
+
+  Insider:
+    unique_key: cik
+    description: "SEC Form 3/4/5 reporting owner (director/officer/10% holder), CIK-keyed at source"
+    required_properties:
+      cik: {type: String, description: "SEC Central Index Key of the reporting owner (unique key)"}
+      name: {type: String, description: "Reporting owner name as filed"}
+      loaded_at: {type: DateTime, description: "When node was loaded"}
+
+  InstitutionalManager:
+    unique_key: cik
+    description: "SEC Form 13F institutional investment manager, CIK-keyed"
+    required_properties:
+      cik: {type: String, description: "SEC Central Index Key of the 13F filer (unique key)"}
+      name: {type: String, description: "Manager name as filed"}
+      loaded_at: {type: DateTime, description: "When node was loaded"}
+
+  BeneficialOwner:
+    unique_key: owner_key
+    description: "SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-slug"
+    required_properties:
+      owner_key: {type: String, description: "CIK if resolvable, else a name-slug (unique key)"}
+      name: {type: String, description: "Filer name as it appears in the submission header"}
+      loaded_at: {type: DateTime, description: "When node was loaded"}
+    optional_properties:
+      cik: {type: String, description: "Filer CIK when resolvable from the submission header"}
+      resolved: {type: Boolean, description: "True if owner_key is a CIK, False if a name-slug"}
+      is_custodial: {type: Boolean, description: "True for broker/custodian/index hubs that bridge unrelated activists. Labelled (never deleted) so the fact survives; excluded at coalition projection time for precision."}
+      coalition_id: {type: Long, description: "Activist coalition component id (GDS WCC over CO_TARGETS, custodial hubs excluded)"}
+
+# ---------------------------------------------------------------------------
+# Relationship types: source → target, required/optional properties
+# ---------------------------------------------------------------------------
+relationships:
+  # --- Filed relationships: straight from SEC forms ---
+  DIRECTOR_OF:
+    pattern: "(Insider)-[:DIRECTOR_OF]->(Company)"
+    description: "Reporting owner is a director of the issuer (SEC Form 3/4/5)"
+    source: Insider
+    target: Company
+    required_properties: [filing_date, source, loaded_at]
+    optional_properties: [accession_number, first_seen, last_seen]
+
+  OFFICER_OF:
+    pattern: "(Insider)-[:OFFICER_OF]->(Company)"
+    description: "Reporting owner is an officer of the issuer (SEC Form 3/4/5)"
+    source: Insider
+    target: Company
+    required_properties: [filing_date, source, loaded_at]
+    optional_properties: [accession_number, officer_title, first_seen, last_seen]
+
+  TEN_PCT_OWNER_OF:
+    pattern: "(Insider)-[:TEN_PCT_OWNER_OF]->(Company)"
+    description: "Reporting owner holds >10% of the issuer (SEC Form 3/4/5)"
+    source: Insider
+    target: Company
+    required_properties: [filing_date, source, loaded_at]
+    optional_properties: [accession_number, first_seen, last_seen]
+
+  # --- Derived relationships: materialized so traversal happens in the database ---
+  SHARES_DIRECTOR:
+    pattern: "(Company)-[:SHARES_DIRECTOR]->(Company)"
+    description: "Two operating boards share >=1 human director (derived from DIRECTOR_OF; board-interlock edge, stored undirected once with id(a)<id(b))"
+    source: Company
+    target: Company
+    required_properties: [director_count, source, computed_at]
+    optional_properties: [via_ciks]
+
+  CONTROLS:
+    pattern: "(BeneficialOwner)-[:CONTROLS]->(Company)"
+    description: "Verified >=50% control of the issuer (derived from BENEFICIAL_OWNER_OF 13D edges where control_class='control'; self-filings excluded). Materialized so the transitive control chain is a real variable-depth Cypher traversal rather than a client-side walk; chains continue where a controlled Company's CIK also exists as a BeneficialOwner."
+    source: BeneficialOwner
+    target: Company
+    required_properties: [percent_of_class, source, computed_at]
+    optional_properties: [accession_number, filing_date]
+
+  SAME_ENTITY_AS:
+    pattern: "(Company)-[:SAME_ENTITY_AS]->(BeneficialOwner)"
+    description: "The Company and the BeneficialOwner are the same legal entity, matched on identical CIK (a hard key, never a name match). Purely structural: it lets a control chain continue past an intermediate holding company that both IS controlled and DOES control, so (root)-[:CONTROLS|SAME_ENTITY_AS*]->(target) traverses the full pyramid in Cypher. Carries no ownership semantics of its own."
+    source: Company
+    target: BeneficialOwner
+    required_properties: [source, computed_at]
+    optional_properties: [cik]
+
+  CO_TARGETS:
+    pattern: "(BeneficialOwner)-[:CO_TARGETS]->(BeneficialOwner)"
+    description: "Two 13D filers co-target >=2 of the same issuers (derived activist co-targeting edge, stored undirected once with a.cik<b.cik). Substrate for the wolf-pack coalition component; custodial/broker hubs are labelled is_custodial on the node and excluded at projection time rather than deleted."
+    source: BeneficialOwner
+    target: BeneficialOwner
+    required_properties: [shared_target_count, source, computed_at]
+    optional_properties: [shared_target_ciks]
+
+  BENEFICIAL_OWNER_OF:
+    pattern: "(BeneficialOwner)-[:BENEFICIAL_OWNER_OF]->(Company)"
+    description: ">5% beneficial owner of the issuer (SEC Schedule 13D/13G)"
+    source: BeneficialOwner
+    target: Company
+    required_properties: [filing_type, filing_date, source, loaded_at]
+    # percent_of_class + the control_* / *_voting / pct_verified props are written by
+    # control_extraction.py onto the >=5% ownership edge (control_class='control' when the
+    # verified stake is >=50% — the substrate for the transitive control-chain win).
+    optional_properties:
+      [
+        percent_of_class,
+        accession_number,
+        control_class,
+        sole_voting,
+        shared_voting,
+        pct_verified,
+        control_extracted_at,
+      ]
+
+  HOLDS:
+    pattern: "(InstitutionalManager)-[:HOLDS]->(Company)"
+    description: >
+      13F reported holding of the issuer by an institutional manager, keyed by
+      report_period so each quarter is a distinct edge (a position time series,
+      not a latest-only snapshot). Slice/compare quarter-over-quarter on
+      report_period to see accumulation/trimming.
+    source: InstitutionalManager
+    target: Company
+    required_properties: [report_period, filing_date, source, loaded_at]
+    optional_properties: [value_usd, shares, cusip, accession_number]
+
+# ---------------------------------------------------------------------------
+# Required constraints (UNIQUE)
+# ---------------------------------------------------------------------------
+constraints:
+  - name: unique_company
+    label: Company
+    property: cik
+    type: UNIQUENESS
+  - name: unique_insider_cik
+    label: Insider
+    property: cik
+    type: UNIQUENESS
+  - name: unique_institutional_manager_cik
+    label: InstitutionalManager
+    property: cik
+    type: UNIQUENESS
+  - name: unique_beneficial_owner_key
+    label: BeneficialOwner
+    property: owner_key
+    type: UNIQUENESS
+
+# ---------------------------------------------------------------------------
+# Required indexes (RANGE, VECTOR, FULLTEXT)
+# ---------------------------------------------------------------------------
+indexes:
+  range:
+    - label: Company
+      property: ticker
+    - label: Company
+      property: sector
+    - label: Company
+      property: sic_code
+    - label: Insider
+      property: name
+    - label: InstitutionalManager
+      property: name
+    - label: BeneficialOwner
+      property: name

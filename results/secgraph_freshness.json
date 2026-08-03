@@ -1,0 +1,54 @@
+{
+  "as_of": "2026-07-24",
+  "database": "secgraph",
+  "layers": {
+    "BENEFICIAL_OWNER_OF": {
+      "count": 57449,
+      "max_filing_date": "2026-07-24"
+    },
+    "BeneficialOwner": {
+      "count": 15986,
+      "max_filing_date": null
+    },
+    "CONTROLS": {
+      "count": 902,
+      "max_filing_date": null
+    },
+    "CO_TARGETS": {
+      "count": 156,
+      "max_filing_date": null
+    },
+    "Company": {
+      "count": 8046,
+      "max_filing_date": null
+    },
+    "DIRECTOR_OF": {
+      "count": 95123,
+      "max_filing_date": null
+    },
+    "HOLDS": {
+      "count": 12595519,
+      "max_filing_date": "2026-05-29"
+    },
+    "Insider": {
+      "count": 137963,
+      "max_filing_date": null
+    },
+    "InstitutionalManager": {
+      "count": 9595,
+      "max_filing_date": null
+    },
+    "OFFICER_OF": {
+      "count": 88743,
+      "max_filing_date": null
+    },
+    "SAME_ENTITY_AS": {
+      "count": 72,
+      "max_filing_date": null
+    },
+    "SHARES_DIRECTOR": {
+      "count": 32315,
+      "max_filing_date": null
+    }
+  }
+}

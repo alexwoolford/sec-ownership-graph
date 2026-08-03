@@ -1,0 +1,148 @@
+# SEC Ownership Graph
+
+**Every SEC ownership filing as one graph, keyed on CIK — so you can ask who moved first on a
+target, who operates as a coalition, and who really controls an issuer.** Built on Neo4j. Every
+answer cites an SEC accession number, and abstains when the data doesn't support one.
+
+Data: Schedule 13D/13G (beneficial ownership, 1994→present), Form 3/4/5 (insiders and directors),
+Form 13F (institutional holdings). Straight from EDGAR — no paid data vendor.
+
+---
+
+## The demo in one question
+
+> *"Which companies have had multiple activists show up recently — and who moved first?"*
+
+```
+$ make demo
+
+Activist convergence — 8 issuers:
+
+  MNRO — MONRO, INC. (2 franchises within 96 days)
+     2025-08-01  GAMCO INVESTORS, INC. ET AL 4.0%
+     2025-11-05  ICAHN CARL C 14.79%
+  ...
+
+Ownership timeline — MONRO, INC.:
+  2025-01-23  13G           DIMENSIONAL FUND ADVISORS LP (passive_index)
+  2025-04-29  13G           BlackRock, Inc. (passive_index)
+  2025-05-15  13G           NOMURA HOLDINGS INC (custodian)
+  2025-08-01  13D     4.0%  GAMCO INVESTORS, INC. ET AL (activist)
+  2025-11-05  13D   14.79%  ICAHN CARL C (activist)
+
+First mover: GAMCO INVESTORS, INC. ET AL on 2025-08-01 at 4.0%
+  → ICAHN CARL C followed 96 days later at 14.79%
+```
+
+Note what the graph does that a filings search cannot: it separates the two *activists* from the
+index money and the custodian **inside the same filing type**, and it puts them in order.
+
+**→ Full walkthrough: [`docs/demo_script_activist_desk.md`](docs/demo_script_activist_desk.md)**
+(five questions, ~10 minutes, including what this *cannot* tell you.)
+
+---
+
+## What is actually graph-native here
+
+Three questions need a relationship followed to a depth the data decides — one declarative Cypher
+pattern, executed next to the data:
+
+| Question | Cypher | Why not SQL |
+| --- | --- | --- |
+| Who ultimately controls this issuer? | `(root)-[:CONTROLS\|SAME_ENTITY_AS*1..N]->(target)` | chain depth is unknown up front |
+| Who operates as a coalition with X? | `(seed)-[:CO_TARGETS*0..N]-(m)` | the component is emergent, not a fixed join |
+| Who bridges these two boards? | `shortestPath((a)-[:SHARES_DIRECTOR*..N]-(z))` | reachability, not "who sits on ≥2 boards" |
+
+Stated precisely, because overclaiming here loses technical audiences: **SQL cannot express a
+single query whose traversal depth is decided by the data.** A warehouse can still reach the same
+answers with a recursive CTE or by looping in application code. The advantage is one indexed
+declarative pattern next to the data — not that the answer is unobtainable elsewhere.
+
+`scripts/prove_graph_native_wins.py` runs the graph traversal and the flat-SQL equivalent
+side by side and cross-checks that they agree (`make prove`).
+
+---
+
+## Quickstart
+
+```bash
+# 1. Install
+pip install -e ".[dev]"
+cp .env.sample .env         # fill in NEO4J_PASSWORD
+
+# 2. Point at a graph. Either build it (hours — downloads from EDGAR):
+make build                  # dry-run: prints the full phased plan, writes nothing
+make build-exec             # for real
+
+# 3. Ask it things
+make demo                   # the activist convergence screen
+make prove                  # graph vs SQL, head to head
+make serve                  # curated MCP tools over stdio
+```
+
+`make serve` exposes seven read-only tools to Claude Desktop or any MCP client (see
+[`.mcp.json`](.mcp.json)) — `activist_convergence`, `campaign_timeline`, `activist_coalition`,
+`ownership_snapshot`, `control_chain`, `board_interlock_path`, `get_secgraph_schema`. Curated
+tools, not raw text2cypher: there is no Cypher passthrough and no write path, so the scrubs and
+thresholds that make the answers correct cannot be bypassed.
+
+Requires Neo4j 5.x with GDS. A named database needs Enterprise or Aura; on Community, set
+`NEO4J_DATABASE=neo4j`.
+
+---
+
+## How it is built
+
+```
+Layer 3  MCP server        curated read-only tools ─► Claude Desktop / any agent
+Layer 2  Query core        traversals + evidence + abstain (transport-agnostic)
+Layer 1  Reproducible DB   phased build, density gate, freshness manifest
+```
+
+`make build` runs the phases in order, aborting on the first failure: create the database →
+load the filer universe → stage and load Form 3/4/5 insiders → **density GO/NO-GO gate**
+(fail-closed: the build stops if the insider layer is too sparse to support the wins) →
+materialize the derived edges (`SHARES_DIRECTOR`, `CONTROLS`, `SAME_ENTITY_AS`, `CO_TARGETS`) →
+load 13D/13G and 13F. A successful run writes `results/secgraph_freshness.json`, which every
+served answer reports as its "as of" date.
+
+`schema/graph_schema.yaml` is the single source of truth — 4 node labels, 9 relationship types.
+`tests/unit/test_schema_consistency.py` scans every `.py` file and fails the build if any Cypher
+references something undeclared.
+
+**Architecture detail: [`docs/reference_architecture_secgraph.md`](docs/reference_architecture_secgraph.md)**
+
+---
+
+## Honest limits
+
+Read these before demoing — they are part of what makes the rest credible.
+
+- **No prediction.** The alpha question was tested and came back null. Efficient markets; 13Ds are
+  public. This is a structural and temporal map, not a signal.
+- **No materiality data.** No market cap, size or financials on any issuer, so results cannot be
+  ranked by "does this matter." Bring your own universe filter. *Largest known gap.*
+- **Activist screens trade recall for precision.** Gated to a curated franchise list; ungated
+  detection is dominated by micro-cap founders crossing 5% and by filing-group artifacts (one
+  manager filing through seven affiliated vehicles). First-time activists are missed by design.
+- **Only 13D/13G dates are a time series.** Board and officer edges are a 2023–2026 keep-latest
+  snapshot; 13F has a 2024 coverage step-up. Don't read trends into them.
+- **Control chains are a small-cap instrument.** Every verified ≥50% chain in this dataset is a
+  micro/nano-cap issuer. A real governance screen; not a large-cap feature.
+- **Board-interlock path *existence* is uninformative.** Measured: every well-connected pair links
+  within 4 hops. The named bridging director is the signal, not the connection.
+- **CIK-keyed only.** Deliberately conservative — understates family/affiliate structure rather
+  than inventing links through fuzzy name matching.
+- **Custodians and index funds are labelled, not deleted.** They're excluded at query time so the
+  underlying co-filing facts stay in the graph and the precision choice stays auditable.
+
+## Development
+
+```bash
+make test     # unit suite: fully mocked, no database needed
+make check    # lint + tests, as CI runs them
+```
+
+## License
+
+MIT. SEC filing data is public domain.
