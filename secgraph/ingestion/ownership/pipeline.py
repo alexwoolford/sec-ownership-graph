@@ -82,11 +82,15 @@ def _steps(
     refresh: bool,
     quarters_345: int = _QUARTERS_345,
     quarters_13f: int = _QUARTERS_13F,
+    extract_control: bool = False,
 ) -> list[Step]:
     """The full phased plan. ``--database`` is threaded onto every DB-touching child.
 
     ``quarters_345`` is caller-overridable because it is the one knob that decides whether the
     density gate passes, and a NO-GO aborts the build at step 5 of 14.
+
+    ``extract_control`` forces the LLM extraction step even when committed control figures
+    exist — use it to fill in filings newer than the CSV.
     """
     db = ["--database", database]
     plan: list[Step] = [
@@ -137,11 +141,36 @@ def _steps(
             "Phase 2a — load BeneficialOwner nodes + 13D/13G BENEFICIAL_OWNER_OF edges",
             extra_args=[*db] + (["--refresh"] if refresh else []),
         ),
-        # Control extraction on 13D edges (needs Phase 2a); only_missing keeps it resumable.
-        Step(
-            "extract_control_edges.py",
-            "Derived — extract control-vs-stake figures for Schedule 13D edges",
-            extra_args=db,
+        # Control figures on 13D edges (needs Phase 2a). Two ways in:
+        #
+        #   1. reference/control_figures.csv, when committed — deterministic, no API key, and
+        #      identical on every rebuild. This is the default and the reproducible path.
+        #   2. extract_control_edges.py — one LLM call per 13D edge. Used when there is no CSV,
+        #      or via --extract-control to fill in filings newer than the CSV.
+        #
+        # Both write the same properties (control_class / percent_of_class / pct_verified), so
+        # materialize_control_edges downstream cannot tell them apart.
+        *(
+            [
+                Step(
+                    "load_control_figures.py",
+                    "Derived — apply committed control figures (deterministic, no LLM)",
+                    extra_args=[*db, "--csv", str(_CONTROL_FIGURES_CSV)],
+                )
+            ]
+            if _CONTROL_FIGURES_CSV.exists()
+            else []
+        ),
+        *(
+            [
+                Step(
+                    "extract_control_edges.py",
+                    "Derived — extract control-vs-stake figures for Schedule 13D edges (LLM)",
+                    extra_args=db,
+                )
+            ]
+            if extract_control or not _CONTROL_FIGURES_CSV.exists()
+            else []
         ),
         # Promote verified control to a traversable edge (+ CIK-identity bridge). Must follow
         # extract_control_edges: it reads control_class='control'. This is what makes the
@@ -491,6 +520,7 @@ def build_secgraph(
     freshness_path: Path | None = None,
     quarters_345: int = _QUARTERS_345,
     quarters_13f: int = _QUARTERS_13F,
+    extract_control: bool = False,
     logger_instance: logging.Logger | None = None,
 ) -> bool:
     """Run the phased secgraph build (or refresh). Returns True on success.
@@ -501,7 +531,13 @@ def build_secgraph(
     ``driver`` is supplied and the run succeeds, writes the freshness manifest.
     """
     log = logger_instance or logger
-    steps = _steps(database, refresh=refresh, quarters_345=quarters_345, quarters_13f=quarters_13f)
+    steps = _steps(
+        database,
+        refresh=refresh,
+        quarters_345=quarters_345,
+        quarters_13f=quarters_13f,
+        extract_control=extract_control,
+    )
 
     if not execute:
         _print_plan(steps, database=database, refresh=refresh, logger_instance=log)

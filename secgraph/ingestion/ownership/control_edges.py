@@ -33,7 +33,9 @@ dry-run-by-default (``--execute`` to write, ``--replace`` to rebuild).
 
 from __future__ import annotations
 
+import csv
 import logging
+from pathlib import Path
 from typing import Any
 
 from secgraph.core.config.constants import BATCH_SIZE_LARGE
@@ -41,6 +43,32 @@ from secgraph.core.config.constants import BATCH_SIZE_LARGE
 logger = logging.getLogger(__name__)
 
 _SOURCE = "sec13d_verified_control"
+
+# Columns of reference/control_figures.csv — the committed, LLM-free control layer.
+CONTROL_FIGURE_COLUMNS = (
+    "accession_number",
+    "company_cik",
+    "owner_key",
+    "percent_of_class",
+    "control_class",
+    "pct_verified",
+)
+
+# Apply committed figures onto the 13D ownership edge, keyed on (company, accession). This is
+# the same property set control_extraction.py writes, so materialize_control_edges cannot tell
+# the difference — but it is deterministic and needs no API key.
+_APPLY_FIGURES_QUERY = """
+    UNWIND $batch AS row
+    MATCH (b:BeneficialOwner {owner_key: row.owner_key})
+          -[r:BENEFICIAL_OWNER_OF {filing_type:'13D'}]->(c:Company {cik: row.company_cik})
+    WHERE r.accession_number = row.accession_number
+    SET r.percent_of_class = row.percent_of_class,
+        r.control_class = row.control_class,
+        r.pct_verified = row.pct_verified,
+        r.control_extracted_at = datetime(),
+        r.control_source = 'reference_csv'
+    RETURN count(r) AS n
+"""
 
 # Minimum verified stake that counts as control. Mirrors
 # graph_native_proof.CONTROL_THRESHOLD_PCT; control_extraction.py already encodes this as
@@ -138,6 +166,116 @@ def identity_bridge_ciks(rows: list[dict[str, Any]]) -> set[str]:
     owners = {r["owner_cik"] for r in rows if r.get("owner_cik")}
     companies = {r["company_cik"] for r in rows if r.get("company_cik")}
     return owners & companies
+
+
+# --------------------------------------------------------------------------- #
+# Committed control figures — the reproducible, LLM-free path.
+# --------------------------------------------------------------------------- #
+def parse_control_figures(path: Path) -> list[dict[str, Any]]:
+    """Read reference/control_figures.csv into typed rows.
+
+    The committed alternative to running ``extract_control_edges.py``: one LLM call per 13D
+    edge, unseeded, against an unpinned model alias. Reading verified figures from a file makes
+    ``CONTROLS`` — and therefore the control-chain count — identical on every rebuild, and drops
+    the OpenAI dependency from the critical path.
+
+    Raises:
+        ValueError: if the header is missing a required column, or a row is malformed. Fails
+            loudly rather than silently importing a partial control layer.
+    """
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        missing = set(CONTROL_FIGURE_COLUMNS) - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path} is missing required column(s): {sorted(missing)}")
+
+        rows: list[dict[str, Any]] = []
+        for lineno, raw in enumerate(reader, start=2):
+            pct_raw = (raw["percent_of_class"] or "").strip()
+            try:
+                pct = float(pct_raw) if pct_raw else None
+            except ValueError as exc:
+                raise ValueError(
+                    f"{path}:{lineno}: percent_of_class {pct_raw!r} is not a number"
+                ) from exc
+            control_class = (raw["control_class"] or "").strip()
+            if control_class not in {"control", "stake", "unknown"}:
+                raise ValueError(
+                    f"{path}:{lineno}: control_class {control_class!r} must be "
+                    "'control', 'stake' or 'unknown'"
+                )
+            rows.append(
+                {
+                    "accession_number": (raw["accession_number"] or "").strip(),
+                    "company_cik": (raw["company_cik"] or "").strip(),
+                    "owner_key": (raw["owner_key"] or "").strip(),
+                    "percent_of_class": pct,
+                    "control_class": control_class,
+                    "pct_verified": str(raw["pct_verified"]).strip().lower()
+                    in {"true", "1", "yes"},
+                }
+            )
+    return rows
+
+
+def load_control_figures(
+    driver,
+    csv_path: Path,
+    database: str | None = None,
+    batch_size: int = BATCH_SIZE_LARGE,
+    execute: bool = False,
+    logger_instance: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """Apply committed control figures onto 13D ownership edges. Dry-run unless ``execute``.
+
+    Coverage is *reported, never silently absorbed*: a cloner whose EDGAR window differs from
+    the one the CSV was exported from will legitimately have figures for accessions they did not
+    crawl, and edges the CSV does not cover. Both counts are surfaced so the gap is visible
+    rather than looking like a clean run.
+    """
+    log = logger_instance or logger
+    rows = parse_control_figures(csv_path)
+    control_rows = sum(1 for r in rows if r["control_class"] == "control")
+    log.info(
+        f"control figures from {csv_path}: {len(rows):,} rows "
+        f"({control_rows:,} classified 'control', i.e. >={CONTROL_THRESHOLD_PCT:.0f}%)"
+    )
+
+    summary: dict[str, Any] = {"csv_rows": len(rows), "csv_control_rows": control_rows}
+
+    if not execute:
+        log.info(f"DRY RUN — would apply {len(rows):,} control figures to 13D edges")
+        log.info("Run with --execute to write.")
+        summary["dry_run"] = True
+        return summary
+
+    applied = 0
+    with driver.session(database=database) as session:
+        for batch in batches(rows, batch_size):
+            applied += session.run(_APPLY_FIGURES_QUERY, batch=batch).single()["n"]
+        uncovered = session.run(
+            """
+            MATCH ()-[r:BENEFICIAL_OWNER_OF {filing_type:'13D'}]->()
+            WHERE r.control_class IS NULL
+            RETURN count(r) AS n
+            """
+        ).single()["n"]
+
+    summary["applied"] = applied
+    summary["unmatched_csv_rows"] = len(rows) - applied
+    summary["uncovered_13d_edges"] = uncovered
+    log.info(f"✓ Applied {applied:,}/{len(rows):,} control figures")
+    if summary["unmatched_csv_rows"]:
+        log.info(
+            f"  {summary['unmatched_csv_rows']:,} CSV rows matched no edge "
+            f"(expected when your EDGAR window differs from the export's)"
+        )
+    if uncovered:
+        log.info(
+            f"  {uncovered:,} 13D edges have no figures — newer filings than the CSV. "
+            f"Run extract_control_edges.py to fill them (needs an OpenAI key)."
+        )
+    return summary
 
 
 # --------------------------------------------------------------------------- #

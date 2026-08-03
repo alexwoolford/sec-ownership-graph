@@ -70,6 +70,12 @@ def main() -> int:
         help=f"Quarters of Form 13F bulk data to stage (default: {DEFAULT_QUARTERS_13F}).",
     )
     parser.add_argument(
+        "--extract-control",
+        action="store_true",
+        help="Run LLM control extraction even when reference/control_figures.csv exists, to fill "
+        "in filings newer than the CSV. Requires the [llm] extra and OPENAI_API_KEY.",
+    )
+    parser.add_argument(
         "--preflight-only",
         action="store_true",
         help="Check every build precondition (Neo4j edition, GDS, SEC_USER_AGENT, control "
@@ -103,6 +109,7 @@ def main() -> int:
             freshness_path=Path(args.freshness_out),
             quarters_345=args.quarters_345,
             quarters_13f=args.quarters_13f,
+            extract_control=args.extract_control,
             logger_instance=logger,
         )
     finally:
