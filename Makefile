@@ -4,7 +4,7 @@ PYTHON := python
 DB ?= secgraph
 # Quarters of Form 3/4/5 to stage. This is what decides whether the density gate passes;
 # override on a NO-GO (`make build-exec QUARTERS_345=16`).
-QUARTERS_345 ?= 12
+QUARTERS_345 ?= 16
 
 .PHONY: help install lint format test check preflight demo prove build build-exec refresh refresh-exec serve clean
 

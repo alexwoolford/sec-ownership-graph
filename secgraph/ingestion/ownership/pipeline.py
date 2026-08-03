@@ -51,12 +51,16 @@ _DENSITY_NO_GO_EXIT = 2
 
 # Default staging depth per form. FTD needs a deeper window to cover the CUSIP crosswalk.
 #
-# _QUARTERS_345 = 12, not 4: the density gate needs enough Form 3/4/5 history for board
-# coverage to saturate. A Form 4 is filed per transaction, so a single quarter surfaces only
-# the directors who happened to trade in it — roughly 3-5 per issuer, well short of the ~11.8
-# distinct directors per company the gate's 60%-in-component threshold requires. Four quarters
-# NO-GOs the gate and aborts the build at step 5 of 14.
-_QUARTERS_345 = 12
+# _QUARTERS_345 = 16, not 4: the density gate needs enough Form 3/4/5 history for board coverage
+# to saturate. A Form 4 is filed per transaction, so one quarter surfaces only the directors who
+# happened to trade in it (~3-5 per issuer), well short of what the 60%-in-component threshold
+# needs. Four quarters NO-GOs the gate and aborts the build at step 5 of 14.
+#
+# Measured on 2026-08-03 (as-of 2026-06-30, 8,000-company universe): 12 quarters passes at
+# 61.3% in-component against a 60.0% threshold — only 1.3 points of margin, on the binding
+# criterion. 12 is the floor, not a safe default, so ship 16 and leave headroom for a universe
+# whose interlock density differs. Extra quarters cost ~10 MB and a few seconds each.
+_QUARTERS_345 = 16
 _QUARTERS_13F = 4
 _QUARTERS_FTD = 14
 
