@@ -59,6 +59,34 @@ target, no hook.
 `NEO4J_PASSWORD` skip are live scaffolding for lanes that are currently empty — don't go looking
 for integration tests that aren't there.
 
+## The reproducibility contract
+
+The demo is meant to be rebuildable from EDGAR, so **every acquisition step must be pinnable**.
+`--as-of YYYY-MM-DD` bounds all four (`345`/`FTD`/`13F` staging plus the 13D/G crawl). Without it,
+"most recent N quarters" resolves against the run date and two builds a week apart cannot agree.
+An unpinned `--execute` run warns about exactly this at the end.
+
+Rules that follow, and the traps behind each:
+
+1. **Never widen a window implicitly.** `staged_zip_paths` globs the *whole* local cache, so a
+   machine that once staged 16 quarters loads all 16 while a fresh clone loads 12 — same command,
+   different graph. Pass `limit=`/`as_of=`.
+2. **Filter by as-of *before* any cap.** `filings_as_of` runs ahead of the 40-filing per-subject
+   truncation; reversing them gives a pinned build *less* history than an unpinned one.
+3. **Order before you truncate.** `collect()` order is unspecified. `via_ciks[0]` is rendered as
+   *the* bridging director, so an unordered collect changed that name between runs on an identical
+   graph. Same for `CO_TARGETS` evidence CIKs.
+4. **No unseeded randomness in a decision path.** The density gate sampled with `ORDER BY rand()`,
+   so the same graph could PASS then FAIL.
+5. **Record provenance, not just results.** `collect_provenance` writes the as-of, the *resolved*
+   staged periods, and whether control figures came from the committed CSV or a live LLM run. A
+   cloner who can't see the inputs can't tell drift from breakage.
+
+Control figures are the LLM-free path: `reference/control_figures.csv` (produced by
+`export_control_figures.py`, applied by `load_control_figures.py`) makes `CONTROLS` deterministic.
+The pipeline prefers it and falls back to LLM extraction; `--extract-control` runs both so the CSV
+seeds and the model fills only newer filings.
+
 ## Core conventions (enforced)
 
 1. **Dry-run by default; `--execute` to write.** A script without `--execute` prints its plan and
