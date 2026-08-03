@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
@@ -213,6 +214,8 @@ def build_edge_rows(
     refresh_headers: bool = False,
     max_filings_per_subject: int = 40,
     as_of: str | None = None,
+    on_batch: Callable[[list[dict]], None] | None = None,
+    checkpoint_every: int = 250,
     log: logging.Logger | None = None,
 ) -> list[dict]:
     """Crawl 13D/G headers for each subject → BENEFICIAL_OWNER_OF edge rows.
@@ -227,14 +230,24 @@ def build_edge_rows(
     requests; needed after a form-code/filter change). ``refresh_headers`` also
     re-fetches every cached SGML header — rarely needed, since headers are
     immutable by accession; newly-discovered accessions are always fetched.
+
+    ``on_batch`` is called with accumulated rows every ``checkpoint_every`` subjects. Without
+    it every row is held until the crawl finishes, so a crash at 95% loses the DB write for
+    the whole run even though the fetch cache survives — which is exactly what happened on a
+    home-internet drop at subject 3,500 of 8,000. Rows handed to ``on_batch`` are not
+    returned again; the MERGE is idempotent, so a partial run is safe to resume.
     """
     log = log or logger
     cache_dir = get_ownership_data_dir("form13dg")
     workers = _crawl_workers()
     total = len(subject_ciks)
     log.info(f"  crawling {total:,} subjects with {workers} concurrent workers...")
+    if on_batch is not None:
+        log.info(f"  checkpointing to the database every {checkpoint_every:,} subjects")
 
     rows: list[dict] = []
+    pending: list[dict] = []
+    flushed = 0
     done = 0
     failed: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -252,7 +265,8 @@ def build_edge_rows(
         }
         for future in as_completed(futures):
             try:
-                rows.extend(future.result())
+                got = future.result()
+                pending.extend(got) if on_batch is not None else rows.extend(got)
             except SubmissionsFetchError as exc:
                 # Tolerate isolated failures (one unreachable subject must not lose a
                 # multi-hour crawl) but never silently: they are counted, and a systemic
@@ -260,9 +274,25 @@ def build_edge_rows(
                 # fatal below. Nothing was cached, so a re-run retries these subjects.
                 failed.append(futures[future])
                 log.debug(f"  subject fetch failed: {exc}")
+            except Exception as exc:  # noqa: BLE001 - see below
+                # Catch-all on purpose. Anything escaping a worker propagates through
+                # .result() and kills the entire crawl; an http.client.IncompleteRead from a
+                # dropped connection did exactly that. Losing one subject is recoverable —
+                # losing hours of throttled fetching is not.
+                failed.append(futures[future])
+                log.debug(f"  subject crawl error ({type(exc).__name__}): {exc}")
             done += 1
+            if on_batch is not None and done % checkpoint_every == 0 and pending:
+                on_batch(pending)
+                flushed += len(pending)
+                pending = []
             if done % 250 == 0:
-                log.info(f"  crawled {done:,}/{total:,} subjects, {len(rows):,} edges so far")
+                seen = flushed + len(pending) if on_batch is not None else len(rows)
+                log.info(f"  crawled {done:,}/{total:,} subjects, {seen:,} edges so far")
+
+    if on_batch is not None and pending:
+        on_batch(pending)
+        flushed += len(pending)
 
     if failed:
         pct = 100.0 * len(failed) / total if total else 0.0
@@ -316,14 +346,55 @@ def load_beneficial_owners(
             subject_ciks = [r["cik"] for r in session.run("MATCH (c:Company) RETURN c.cik AS cik")]
     log.info(f"Crawling 13D/13G headers for {len(subject_ciks):,} subject companies...")
 
+    # Under --execute, write to Neo4j as the crawl proceeds instead of holding every row until
+    # the end. A multi-hour crawl on a home connection *will* be interrupted; the fetch cache
+    # made a re-run cheap, but the DB write was all-or-nothing, so a drop at 95% wrote nothing.
+    stats = {"owners": 0, "edges": 0, "checkpoints": 0}
+    seen_owners: set[str] = set()
+    resolved_count = 0
+    total_rows = 0
+
+    def flush(batch_rows: list[dict]) -> None:
+        nonlocal resolved_count, total_rows
+        seen_owners.update(r["owner_key"] for r in batch_rows)
+        resolved_count += sum(1 for r in batch_rows if r["resolved"])
+        total_rows += len(batch_rows)
+        with driver.session(database=database) as session:
+            for start in range(0, len(batch_rows), batch_size):
+                chunk = clean_properties_batch(batch_rows[start : start + batch_size])
+                stats["edges"] += session.run(_MERGE_QUERY, batch=chunk).single()["n"]
+        stats["checkpoints"] += 1
+        log.info(f"    ✓ checkpoint {stats['checkpoints']}: {stats['edges']:,} edges written")
+
     rows = build_edge_rows(
         subject_ciks,
         refresh=refresh,
         refresh_headers=refresh_headers,
         max_filings_per_subject=max_filings_per_subject,
         as_of=as_of,
+        on_batch=flush if execute else None,
         log=log,
     )
+
+    if execute:
+        if subject_ciks and total_rows == 0:
+            raise SubmissionsFetchError(
+                f"crawled {len(subject_ciks):,} subjects and found 0 Schedule 13D/13G edges. "
+                f"This is never a valid outcome for a real universe. Check that SEC_USER_AGENT "
+                f"is a real contact string, and that data/sec_ownership/form13dg/ does not hold "
+                f"empty cached indexes from an earlier blocked run (delete it to re-crawl)."
+            )
+        resolution_rate = round(resolved_count / total_rows * 100, 1) if total_rows else 0.0
+        log.info(
+            f"✓ Loaded {len(seen_owners):,} beneficial owners, {stats['edges']:,} edges "
+            f"across {stats['checkpoints']} checkpoint(s), filer resolution {resolution_rate}%"
+        )
+        return {
+            "owners": len(seen_owners),
+            "edges": stats["edges"],
+            "resolution_rate_pct": resolution_rate,
+        }
+
     if subject_ciks and not rows:
         # Every 13D/G-driven demo surface (convergence, coalition, control chains) depends on
         # this layer. Zero edges across the whole universe is never a legitimate result, but it
@@ -341,28 +412,13 @@ def load_beneficial_owners(
     log.info(
         f"  {len(rows):,} edges, {distinct_owners:,} owners, filer resolution {resolution_rate}%"
     )
-
-    if not execute:
-        log.info("")
-        log.info("DRY RUN — would MERGE BeneficialOwner nodes + BENEFICIAL_OWNER_OF edges:")
-        log.info(f"  owners: {distinct_owners:,}, edges: {len(rows):,}")
-        log.info("Run with --execute to load.")
-        return {
-            "dry_run": True,
-            "owners": distinct_owners,
-            "edges": len(rows),
-            "resolution_rate_pct": resolution_rate,
-        }
-
-    written = 0
-    with driver.session(database=database) as session:
-        for start in range(0, len(rows), batch_size):
-            batch = clean_properties_batch(rows[start : start + batch_size])
-            written += session.run(_MERGE_QUERY, batch=batch).single()["n"]
-
-    log.info(f"✓ Loaded {distinct_owners:,} beneficial owners, {written:,} edges")
+    log.info("")
+    log.info("DRY RUN — would MERGE BeneficialOwner nodes + BENEFICIAL_OWNER_OF edges:")
+    log.info(f"  owners: {distinct_owners:,}, edges: {len(rows):,}")
+    log.info("Run with --execute to load.")
     return {
+        "dry_run": True,
         "owners": distinct_owners,
-        "edges": written,
+        "edges": len(rows),
         "resolution_rate_pct": resolution_rate,
     }

@@ -477,6 +477,71 @@ class TestBeneficialHeader:
         assert len(rows) == 35
         assert all(r["accession_number"].startswith("old-") for r in rows)
 
+    # --- outage resilience -------------------------------------------------------------- #
+    # A real internet drop killed a 2.5-hour crawl at subject 3,500 of 8,000: IncompleteRead is
+    # an http.client.HTTPException, NOT an OSError, so it escaped the retry list AND the
+    # per-subject except clause, and the end-of-crawl DB write meant zero rows were saved.
+
+    def test_incomplete_read_is_a_transient_fetch_error(self):
+        """The exact exception class a mid-transfer network drop raises must be retried."""
+        import http.client
+
+        from secgraph.ingestion.ownership import edgar_client
+
+        assert not issubclass(http.client.IncompleteRead, OSError)  # why it was missed
+        assert issubclass(http.client.IncompleteRead, edgar_client._TRANSIENT_FETCH_ERRORS)
+
+    def test_arbitrary_worker_exception_does_not_kill_the_crawl(self, monkeypatch):
+        """Anything escaping a worker propagates through .result() and ends the whole run."""
+        import http.client
+
+        def flaky(subject_cik, cache_dir, refresh=False):
+            if subject_cik == "0000012345":
+                raise http.client.IncompleteRead(b"partial")
+            return [{"accession": "a", "form": "SC 13D", "date": "2025-01-15"}]
+
+        monkeypatch.setattr(beneficial, "fetch_13dg_accessions", flaky)
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+
+        rows = beneficial.build_edge_rows(["0001326380"] * 9 + ["0000012345"])
+        assert rows, "the other nine subjects must still yield edges"
+
+    def test_on_batch_checkpoints_during_the_crawl(self, monkeypatch):
+        """Rows must reach the caller *during* the crawl, not only at the end."""
+        monkeypatch.setattr(
+            beneficial,
+            "fetch_13dg_accessions",
+            lambda cik, cache_dir, refresh=False: [
+                {"accession": f"{cik}-a", "form": "SC 13D", "date": "2025-01-15"}
+            ],
+        )
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+
+        batches: list[int] = []
+        returned = beneficial.build_edge_rows(
+            [f"{i:010d}" for i in range(10)],
+            on_batch=lambda rows: batches.append(len(rows)),
+            checkpoint_every=4,
+        )
+        # 10 subjects at every-4 → flushes at 4 and 8, then a final flush of the remainder.
+        assert len(batches) >= 2, f"expected multiple checkpoints, got {batches}"
+        assert sum(batches) == 10, f"every row must be handed over exactly once: {batches}"
+        # Handed-off rows are not also returned, or they would be written twice.
+        assert returned == []
+
+    def test_without_on_batch_rows_are_returned(self, monkeypatch):
+        """The dry-run path has no callback and must still see every row."""
+        monkeypatch.setattr(
+            beneficial,
+            "fetch_13dg_accessions",
+            lambda cik, cache_dir, refresh=False: [
+                {"accession": f"{cik}-a", "form": "SC 13D", "date": "2025-01-15"}
+            ],
+        )
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+        rows = beneficial.build_edge_rows([f"{i:010d}" for i in range(5)])
+        assert len(rows) == 5
+
     def test_isolated_fetch_failure_is_tolerated(self, monkeypatch):
         """One unreachable subject must not lose a multi-hour crawl."""
         from secgraph.ingestion.ownership.edgar_client import SubmissionsFetchError

@@ -14,6 +14,7 @@ so a re-run is cheap and resumable.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import time
@@ -46,6 +47,18 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _HEADER_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_nodash}/{acc}.txt"
 
 
+# Everything a flaky network can raise mid-fetch. HTTPException is the important one and the
+# least obvious: IncompleteRead / ChunkedEncodingError inherit from it, NOT from OSError, so a
+# retry list of (TimeoutError, URLError, OSError) silently misses a truncated response — the
+# single most likely symptom of an internet drop.
+_TRANSIENT_FETCH_ERRORS = (
+    TimeoutError,
+    urllib.error.URLError,
+    OSError,
+    http.client.HTTPException,
+)
+
+
 class SubmissionsFetchError(RuntimeError):
     """A subject's submissions index could not be fetched, and the result is unknown.
 
@@ -71,13 +84,19 @@ def _user_agent() -> str:
     return os.environ.get("SEC_USER_AGENT", _SEC_USER_AGENT)
 
 
-def _throttled_get(url: str, timeout: int = 60, retries: int = 3) -> bytes:
+def _throttled_get(url: str, timeout: int = 60, retries: int = 4) -> bytes:
     """Fetch a URL as bytes, throttled to the SEC limit, retrying transients.
 
     Read timeouts and connection resets are common over a ~200k-request crawl.
-    They are retried with linear backoff (re-acquiring a rate-limit slot each
+    They are retried with exponential backoff (re-acquiring a rate-limit slot each
     time) so a single blip does not surface to the caller; the final attempt's
     exception propagates only if every retry fails.
+
+    ``_TRANSIENT_FETCH_ERRORS`` deliberately includes ``http.client.HTTPException``.
+    ``IncompleteRead`` — what a mid-transfer network drop produces — is an ``HTTPException``
+    and **not** an ``OSError``, so it fell outside the original retry list and killed a
+    2.5-hour crawl at subject 3,500 of 8,000. Backoff is exponential rather than linear
+    because a real outage lasts longer than 3 seconds: 2s, 4s, 8s buys ~14s of tolerance.
     """
     limiter = get_rate_limiter("sec_edgar", requests_per_second=SEC_EDGAR_RATE_LIMIT)
     req = urllib.request.Request(url, headers={"User-Agent": _user_agent()})
@@ -90,15 +109,17 @@ def _throttled_get(url: str, timeout: int = 60, retries: int = 3) -> bytes:
                 req, timeout=timeout
             ) as resp:
                 return resp.read()
-        except (TimeoutError, urllib.error.URLError, OSError) as exc:
+        except _TRANSIENT_FETCH_ERRORS as exc:
             # HTTP status errors (e.g. 404) are deterministic — don't retry them.
             if isinstance(exc, urllib.error.HTTPError):
                 raise
             last_exc = exc
             logger.debug(
-                f"transient fetch error (attempt {attempt + 1}/{retries}) for {url}: {exc}"
+                f"transient fetch error (attempt {attempt + 1}/{retries}) for {url}: "
+                f"{type(exc).__name__}: {exc}"
             )
-            time.sleep(1.0 * (attempt + 1))
+            if attempt < retries - 1:
+                time.sleep(2.0 * (2**attempt))
     raise last_exc if last_exc is not None else RuntimeError(f"fetch failed: {url}")
 
 
@@ -136,11 +157,12 @@ def fetch_13dg_accessions(
             f"Not cached. If this is 403, set a real SEC_USER_AGENT "
             f"(SEC rejects the placeholder contact address)."
         ) from exc
-    except (OSError, urllib.error.URLError, ValueError) as exc:
-        # Transient (timeout / connection reset / malformed body) and already retried by
-        # _throttled_get. Do not cache — a network blip must not become permanent data loss.
+    except (*_TRANSIENT_FETCH_ERRORS, ValueError) as exc:
+        # Transient (timeout / reset / truncated response / malformed body) and already retried
+        # by _throttled_get. Do not cache — a network blip must not become permanent data loss.
         raise SubmissionsFetchError(
-            f"submissions fetch failed for CIK {subject_cik} after retries: {exc}"
+            f"submissions fetch failed for CIK {subject_cik} after retries: "
+            f"{type(exc).__name__}: {exc}"
         ) from exc
     recent = sub.get("filings", {}).get("recent", {})
     forms = recent.get("form", [])
@@ -174,10 +196,11 @@ def fetch_submission_header(
     )
     try:
         raw = _throttled_get(url).decode("utf-8", "ignore")
-    except (OSError, urllib.error.URLError) as exc:
-        # OSError catches post-retry TimeoutError/reset; skip this one header
-        # rather than crashing the crawl (build_edge_rows re-raises via .result).
-        logger.debug(f"header fetch failed for {accession}: {exc}")
+    except _TRANSIENT_FETCH_ERRORS as exc:
+        # Skip this one header rather than crashing the crawl. Must include HTTPException:
+        # an IncompleteRead here previously propagated out through build_edge_rows' .result()
+        # and killed the whole run. Nothing is cached, so a re-run retries this accession.
+        logger.debug(f"header fetch failed for {accession}: {type(exc).__name__}: {exc}")
         return None
     end = raw.find("</SEC-HEADER>")
     header = raw[: end + len("</SEC-HEADER>")] if end != -1 else raw[:8000]
@@ -215,8 +238,8 @@ def fetch_submission_body(
     )
     try:
         raw = _throttled_get(url)[:max_bytes].decode("utf-8", "ignore")
-    except (OSError, urllib.error.URLError) as exc:
-        logger.debug(f"body fetch failed for {accession}: {exc}")
+    except _TRANSIENT_FETCH_ERRORS as exc:
+        logger.debug(f"body fetch failed for {accession}: {type(exc).__name__}: {exc}")
         return None
     cache_file.write_text(raw)
     return raw
