@@ -33,6 +33,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from secgraph.core.config.settings import ModelConfig
+from secgraph.ingestion.ownership.bulk_datasets import staged_zip_paths
+
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -491,25 +494,69 @@ RETURN k, c, max_date
 """
 
 
-def collect_freshness(driver, database: str) -> dict[str, Any]:
+def collect_provenance(
+    *,
+    as_of: str | None,
+    quarters_345: int,
+    quarters_13f: int,
+) -> dict[str, Any]:
+    """Record what this build was built *from*, not just what came out of it.
+
+    Without this a cloner who gets different numbers cannot tell drift from breakage. The
+    freshness manifest already reported output counts; the missing half is the inputs — the
+    pin date, the staged windows, and whether the control layer came from a committed file or
+    a live LLM run.
+    """
+    staged: dict[str, list[str]] = {}
+    for subdir in ("form345", "form13f", "ftd"):
+        try:
+            paths = staged_zip_paths(subdir, as_of=as_of)
+        except OSError:  # pragma: no cover - cache dir may not exist on a partial build
+            paths = []
+        staged[subdir] = [p.name.rsplit(f"_{subdir}.zip", 1)[0] for p in paths]
+
+    return {
+        "as_of_requested": as_of,
+        "as_of_pinned": as_of is not None,
+        "quarters_345_requested": quarters_345,
+        "quarters_13f_requested": quarters_13f,
+        "staged_periods": staged,
+        "control_figures": (
+            {
+                "source": "reference_csv",
+                "path": str(_CONTROL_FIGURES_CSV.relative_to(_REPO_ROOT)),
+            }
+            if _CONTROL_FIGURES_CSV.exists()
+            else {"source": "llm_extraction", "model": ModelConfig.LLM_MINI_MODEL}
+        ),
+    }
+
+
+def collect_freshness(
+    driver, database: str, provenance: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Read per-layer row counts + max filing dates for the freshness manifest (read-only).
 
     The served answer's "as of" is the newest 13D/13G ``filing_date`` — the one trustworthy
-    dated layer (1994→present). Board/insider layers are a keep-latest snapshot, so no date is
-    claimed for them.
+    dated layer. Board/insider layers are a keep-latest snapshot, so no date is claimed for them.
     """
     with driver.session(database=database) as session:
         rows = session.run(_FRESHNESS_QUERY).data()
     layers = {r["k"]: {"count": r["c"], "max_filing_date": r["max_date"]} for r in rows}
     as_of = layers.get("BENEFICIAL_OWNER_OF", {}).get("max_filing_date")
-    return {"database": database, "as_of": as_of, "layers": layers}
+    manifest: dict[str, Any] = {"database": database, "as_of": as_of, "layers": layers}
+    if provenance is not None:
+        manifest["provenance"] = provenance
+    return manifest
 
 
-def write_freshness_manifest(driver, database: str, out_path: Path) -> dict[str, Any]:
+def write_freshness_manifest(
+    driver, database: str, out_path: Path, provenance: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Compute and persist the freshness manifest; returns the manifest dict."""
     import json
 
-    manifest = collect_freshness(driver, database)
+    manifest = collect_freshness(driver, database, provenance=provenance)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     logger.info("wrote freshness manifest %s (as_of=%s)", out_path, manifest["as_of"])
@@ -605,7 +652,21 @@ def build_secgraph(
     if driver is not None:
         out = freshness_path or (Path("results") / "secgraph_freshness.json")
         try:
-            write_freshness_manifest(driver, database, out)
+            write_freshness_manifest(
+                driver,
+                database,
+                out,
+                provenance=collect_provenance(
+                    as_of=as_of, quarters_345=quarters_345, quarters_13f=quarters_13f
+                ),
+            )
         except Exception as exc:  # pragma: no cover - manifest is best-effort
             log.warning("could not write freshness manifest: %s", exc)
+        if as_of is None:
+            log.warning("")
+            log.warning(
+                "⚠ built without --as-of, so the staged windows tracked today's date. "
+                "A later rebuild will not reproduce these counts; pass "
+                "--as-of YYYY-MM-DD to pin them."
+            )
     return True
