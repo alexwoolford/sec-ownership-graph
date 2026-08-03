@@ -35,13 +35,24 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SCRIPT_DIR = Path(__file__).resolve().parents[3] / "scripts"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_SCRIPT_DIR = _REPO_ROOT / "scripts"
+
+# Committed reference inputs — these are what make a rebuild reproducible rather than
+# "whatever EDGAR served today". Absent on a first build; see scripts/export_control_figures.py.
+_CONTROL_FIGURES_CSV = _REPO_ROOT / "reference" / "control_figures.csv"
 
 # Exit code the density gate uses to signal NO-GO (see measure_ownership_density.py).
 _DENSITY_NO_GO_EXIT = 2
 
 # Default staging depth per form. FTD needs a deeper window to cover the CUSIP crosswalk.
-_QUARTERS_345 = 4
+#
+# _QUARTERS_345 = 12, not 4: the density gate needs enough Form 3/4/5 history for board
+# coverage to saturate. A Form 4 is filed per transaction, so a single quarter surfaces only
+# the directors who happened to trade in it — roughly 3-5 per issuer, well short of the ~11.8
+# distinct directors per company the gate's 60%-in-component threshold requires. Four quarters
+# NO-GOs the gate and aborts the build at step 5 of 14.
+_QUARTERS_345 = 12
 _QUARTERS_13F = 4
 _QUARTERS_FTD = 14
 
@@ -65,8 +76,18 @@ class Step:
     refresh_only: bool = False
 
 
-def _steps(database: str, *, refresh: bool) -> list[Step]:
-    """The full phased plan. ``--database`` is threaded onto every DB-touching child."""
+def _steps(
+    database: str,
+    *,
+    refresh: bool,
+    quarters_345: int = _QUARTERS_345,
+    quarters_13f: int = _QUARTERS_13F,
+) -> list[Step]:
+    """The full phased plan. ``--database`` is threaded onto every DB-touching child.
+
+    ``quarters_345`` is caller-overridable because it is the one knob that decides whether the
+    density gate passes, and a NO-GO aborts the build at step 5 of 14.
+    """
     db = ["--database", database]
     plan: list[Step] = [
         # Phase 0 — standalone database + constraints (cold-start only).
@@ -87,7 +108,7 @@ def _steps(database: str, *, refresh: bool) -> list[Step]:
             "download_ownership_data.py",
             "Phase 1 stage — download Form 3/4/5 bulk datasets",
             adds_execute=False,
-            extra_args=["--form", "345", "--quarters", str(_QUARTERS_345)]
+            extra_args=["--form", "345", "--quarters", str(quarters_345)]
             + (["--refresh"] if refresh else []),
         ),
         Step(
@@ -153,7 +174,7 @@ def _steps(database: str, *, refresh: bool) -> list[Step]:
             "download_ownership_data.py",
             "Phase 2b stage — download Form 13F datasets",
             adds_execute=False,
-            extra_args=["--form", "13f", "--quarters", str(_QUARTERS_13F)]
+            extra_args=["--form", "13f", "--quarters", str(quarters_13f)]
             + (["--refresh"] if refresh else []),
         ),
         Step(
@@ -219,6 +240,197 @@ def _print_plan(steps: list[Step], *, database: str, refresh: bool, logger_insta
 
 
 # --------------------------------------------------------------------------- #
+# Preflight.
+# --------------------------------------------------------------------------- #
+# Free space needed for staged EDGAR data: 13F zips run ~87 MB each, FTD ~21 MB, plus up to
+# 600 KB per cached 13D body across ~14k accessions. 20 GB is comfortable headroom.
+_MIN_FREE_DISK_GB = 20.0
+
+
+def preflight_checks(
+    *,
+    database: str,
+    driver=None,
+    refresh: bool = False,
+    log: logging.Logger | None = None,
+) -> list[str]:
+    """Check every precondition a full build needs. Returns a list of failure messages.
+
+    Every one of these used to surface only after minutes-to-hours of EDGAR crawling, as a
+    generic non-zero exit from a child script. Checking them up front is the difference between
+    a 5-second actionable error and a wasted overnight run. Read-only: no writes, no network.
+
+    ``driver`` is optional so the dry run can report everything checkable without credentials.
+    """
+    log = log or logger
+    failures: list[str] = []
+
+    # --- SEC fair access. A placeholder UA earns HTTP 403 on every request, which used to
+    # produce a green build over an empty graph (see edgar_client.SubmissionsFetchError).
+    from secgraph.ingestion.ownership.edgar_client import (
+        _user_agent,
+        is_placeholder_user_agent,
+    )
+
+    if is_placeholder_user_agent():
+        failures.append(
+            "SEC_USER_AGENT is unset or still the placeholder "
+            f"({_user_agent()!r}). SEC fair-access rejects generic agents with HTTP 403. "
+            "Set a real contact string, e.g.\n"
+            "        export SEC_USER_AGENT='Your Name your.email@domain.com'"
+        )
+    else:
+        log.info(f"  ✓ SEC_USER_AGENT: {_user_agent()}")
+
+    # --- Disk. The 13F layer alone writes millions of edges from ~350 MB of zips.
+    try:
+        import shutil
+
+        free_gb = shutil.disk_usage(Path.cwd()).free / 1024**3
+        if free_gb < _MIN_FREE_DISK_GB:
+            failures.append(
+                f"only {free_gb:.1f} GB free on the volume holding data/; "
+                f"a full build stages ~{_MIN_FREE_DISK_GB:.0f} GB of EDGAR data"
+            )
+        else:
+            log.info(f"  ✓ disk: {free_gb:.1f} GB free")
+    except OSError as exc:  # pragma: no cover - platform-dependent
+        log.warning(f"  ? could not check free disk space: {exc}")
+
+    # --- Control figures: either the committed CSV, or a working LLM path. Checked here
+    # because extract_control_edges is step 8 of 14 — hours in — and dies on a bare import.
+    if _CONTROL_FIGURES_CSV.exists():
+        log.info(f"  ✓ control figures: {_CONTROL_FIGURES_CSV}")
+    else:
+        import importlib.util
+
+        if importlib.util.find_spec("openai") is None:
+            failures.append(
+                f"no committed control figures at {_CONTROL_FIGURES_CSV} and the 'openai' "
+                "package is not installed, so control extraction cannot run.\n"
+                '        Install it with:  pip install -e ".[dev,llm]"\n'
+                "        (the documented '[dev]' extra deliberately omits openai)"
+            )
+        else:
+            from secgraph.core.config.settings import get_settings
+
+            if not get_settings().openai_api_key:
+                failures.append(
+                    f"no committed control figures at {_CONTROL_FIGURES_CSV} and "
+                    "OPENAI_API_KEY is not set, so control extraction cannot run.\n"
+                    "        Set OPENAI_API_KEY in .env, or supply the CSV."
+                )
+            else:
+                log.info("  ✓ control extraction: openai + OPENAI_API_KEY available")
+
+    # --- Neo4j. Only checkable with a driver; the dry run says so rather than guessing.
+    if driver is None:
+        log.info("  ? Neo4j checks skipped (no driver in dry-run mode)")
+        return failures
+
+    try:
+        with driver.session(database="system") as session:
+            session.run("SHOW DATABASES YIELD name RETURN count(*) AS n").consume()
+        log.info("  ✓ Neo4j reachable (system database)")
+    except Exception as exc:
+        failures.append(f"cannot reach Neo4j's system database: {exc}")
+        return failures  # everything below needs a working connection
+
+    # Named databases need Enterprise. Only relevant on a cold start, which creates one.
+    if not refresh:
+        try:
+            with driver.session(database="system") as session:
+                rows = session.run(
+                    "SHOW DATABASES YIELD name RETURN collect(name) AS names"
+                ).single()
+                existing = set(rows["names"] or [])
+            if database not in existing:
+                edition = _server_edition(driver)
+                if edition and edition != "enterprise":
+                    failures.append(
+                        f"database '{database}' does not exist and this server is "
+                        f"{edition} edition, which cannot CREATE DATABASE.\n"
+                        "        Use Neo4j Enterprise (or the neo4j:enterprise Docker image), "
+                        "or target the existing database:\n"
+                        "          make build-exec DB=neo4j   (with NEO4J_DATABASE=neo4j)"
+                    )
+                else:
+                    log.info(f"  ✓ database '{database}' will be created (enterprise edition)")
+            else:
+                log.info(f"  ✓ database '{database}' already exists")
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(f"  ? could not inspect databases: {exc}")
+
+    # GDS backs the density gate (WCC) and the coalition projection. Without it the gate cannot
+    # run at all, and the gate is what authorizes the rest of the build.
+    #
+    # gds.version() must be called on a *user* database — it is unavailable on `system`. On a
+    # cold start the target database does not exist yet, so probe any existing user database.
+    existing = _existing_databases(driver)
+    gds_db = database if database in existing else _any_user_database(existing)
+    if gds_db is None:
+        log.warning("  ? GDS check skipped (no user database available to probe)")
+        return failures
+    try:
+        with driver.session(database=gds_db) as session:
+            version = session.run("RETURN gds.version() AS v").single()["v"]
+        log.info(f"  ✓ GDS {version} (probed on '{gds_db}')")
+    except Exception:
+        failures.append(
+            "the GDS plugin is not available, but the density gate needs gds.wcc.write.\n"
+            "        Install Graph Data Science on the server "
+            "(Docker: NEO4J_PLUGINS='[\"graph-data-science\"]')."
+        )
+
+    return failures
+
+
+def _any_user_database(existing: set[str]) -> str | None:
+    """Pick a user database to probe for GDS. Prefers ``neo4j``; never ``system``."""
+    if "neo4j" in existing:
+        return "neo4j"
+    candidates = sorted(existing - {"system"})
+    return candidates[0] if candidates else None
+
+
+def _existing_databases(driver) -> set[str]:
+    """Names of databases on this server; empty set if it cannot be determined."""
+    try:
+        with driver.session(database="system") as session:
+            row = session.run("SHOW DATABASES YIELD name RETURN collect(name) AS names").single()
+        return set(row["names"] or [])
+    except Exception:  # pragma: no cover - defensive
+        return set()
+
+
+def _server_edition(driver) -> str | None:
+    """Server edition ('enterprise' / 'community'), or None if undeterminable."""
+    try:
+        with driver.session(database="system") as session:
+            row = session.run(
+                "CALL dbms.components() YIELD edition RETURN edition LIMIT 1"
+            ).single()
+        return (row["edition"] or "").lower() or None
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def _report_preflight(failures: list[str], *, log: logging.Logger) -> bool:
+    """Log preflight results. Returns True when the build may proceed."""
+    if not failures:
+        log.info("✓ preflight passed")
+        return True
+    log.error("")
+    log.error("=" * 70)
+    log.error(f"✗ PREFLIGHT FAILED — {len(failures)} issue(s). Nothing has been written.")
+    log.error("=" * 70)
+    for i, msg in enumerate(failures, 1):
+        log.error(f"  {i}. {msg}")
+    log.error("=" * 70)
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # Freshness manifest.
 # --------------------------------------------------------------------------- #
 _FRESHNESS_QUERY = """
@@ -277,20 +489,27 @@ def build_secgraph(
     execute: bool = False,
     driver=None,
     freshness_path: Path | None = None,
+    quarters_345: int = _QUARTERS_345,
+    quarters_13f: int = _QUARTERS_13F,
     logger_instance: logging.Logger | None = None,
 ) -> bool:
     """Run the phased secgraph build (or refresh). Returns True on success.
 
     Dry-run by default: without ``execute`` it prints the plan and returns True. On
-    ``execute``, runs each phase in order, aborting on the first non-zero exit; a density-gate
-    NO-GO (exit ``_DENSITY_NO_GO_EXIT``) aborts fail-closed. When a ``driver`` is supplied and
-    the run succeeds, writes the freshness manifest.
+    ``execute``, runs the preflight and then each phase in order, aborting on the first non-zero
+    exit; a density-gate NO-GO (exit ``_DENSITY_NO_GO_EXIT``) aborts fail-closed. When a
+    ``driver`` is supplied and the run succeeds, writes the freshness manifest.
     """
     log = logger_instance or logger
-    steps = _steps(database, refresh=refresh)
+    steps = _steps(database, refresh=refresh, quarters_345=quarters_345, quarters_13f=quarters_13f)
 
     if not execute:
         _print_plan(steps, database=database, refresh=refresh, logger_instance=log)
+        log.info("")
+        log.info("PREFLIGHT (what the real run will require):")
+        _report_preflight(
+            preflight_checks(database=database, driver=driver, refresh=refresh, log=log), log=log
+        )
         return True
 
     mode = "REFRESH" if refresh else "BUILD"
@@ -298,17 +517,34 @@ def build_secgraph(
     log.info("RUNNING SECGRAPH %s — database '%s'", mode, database)
     log.info("=" * 70)
 
+    # Fail in seconds rather than after hours of EDGAR crawling.
+    log.info("")
+    log.info("PREFLIGHT:")
+    if not _report_preflight(
+        preflight_checks(database=database, driver=driver, refresh=refresh, log=log), log=log
+    ):
+        return False
+
     started = time.time()
     for step in steps:
         code = _run_step(step, execute=execute, logger_instance=log)
         if code != 0:
             if step.gate and code == _DENSITY_NO_GO_EXIT:
+                deeper = quarters_345 + 4
                 log.error("")
                 log.error("=" * 70)
                 log.error("✗ DENSITY GATE NO-GO — aborting build fail-closed.")
-                log.error("  The insider layer is too sparse to support the graph-native")
-                log.error("  wins. Stage more quarters (download_ownership_data --form 345")
-                log.error("  --quarters N) and re-run before loading downstream layers.")
+                log.error("  The insider layer is too sparse to support the graph-native wins.")
+                log.error("  This build staged %d quarters of Form 3/4/5.", quarters_345)
+                log.error("")
+                log.error("  Board coverage saturates with history: a Form 4 is filed per")
+                log.error("  transaction, so a quarter only surfaces directors who traded in it.")
+                log.error("  Stage more and re-run:")
+                log.error("")
+                log.error("    python scripts/build_secgraph.py --database %s \\", database)
+                log.error("        --quarters-345 %d --execute", deeper)
+                log.error("")
+                log.error("  Staged zips are cached, so re-running only fetches the new quarters.")
                 log.error("=" * 70)
             else:
                 log.error("Aborting: step failed — %s (exit %d)", step.script, code)

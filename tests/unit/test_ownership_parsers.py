@@ -374,6 +374,46 @@ class TestBeneficialHeader:
         assert "some-person-group" in by_owner  # name-slug fallback
         assert by_owner["some-person-group"]["resolved"] is False
 
+    def test_isolated_fetch_failure_is_tolerated(self, monkeypatch):
+        """One unreachable subject must not lose a multi-hour crawl."""
+        from secgraph.ingestion.ownership.edgar_client import SubmissionsFetchError
+
+        def flaky(subject_cik, cache_dir, refresh=False):
+            if subject_cik == "0000012345":
+                raise SubmissionsFetchError("boom")
+            return [{"accession": "a", "form": "SC 13D", "date": "2025-01-15"}]
+
+        monkeypatch.setattr(beneficial, "fetch_13dg_accessions", flaky)
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+        # 1 of 10 failing is under the threshold: return what we have.
+        subjects = ["0001326380"] * 9 + ["0000012345"]
+        rows = beneficial.build_edge_rows(subjects)
+        assert rows, "surviving subjects should still produce edges"
+
+    def test_systemic_fetch_failure_aborts(self, monkeypatch):
+        """Mass failure (e.g. SEC 403-ing every request) must abort, not half-build."""
+        from secgraph.ingestion.ownership.edgar_client import SubmissionsFetchError
+
+        def always_blocked(subject_cik, cache_dir, refresh=False):
+            raise SubmissionsFetchError("403 Forbidden")
+
+        monkeypatch.setattr(beneficial, "fetch_13dg_accessions", always_blocked)
+        with pytest.raises(SubmissionsFetchError, match="aborting"):
+            beneficial.build_edge_rows([f"{i:010d}" for i in range(10)])
+
+    def test_zero_edges_universe_wide_aborts(self, monkeypatch):
+        """A green build over an empty 13D layer is the failure this prevents."""
+        from secgraph.ingestion.ownership.edgar_client import SubmissionsFetchError
+
+        monkeypatch.setattr(beneficial, "build_edge_rows", lambda *a, **k: [])
+        with pytest.raises(SubmissionsFetchError, match="0 Schedule 13D/13G edges"):
+            beneficial.load_beneficial_owners(
+                driver=None,
+                subject_ciks=["0001326380", "0000012345"],
+                database="secgraph",
+                execute=False,
+            )
+
 
 # --------------------------------------------------------------------------- #
 # universe: company_tickers.json dedup by CIK
@@ -431,6 +471,62 @@ class TestEdgarClient:
         result = edgar_client.fetch_13dg_accessions("0000000001", tmp_path)
         forms = [r["form"] for r in result]
         assert forms == ["SC 13D", "SC 13G/A", "SCHEDULE 13D/A", "SCHEDULE 13G"]
+
+    # --- the poison-cache contract ------------------------------------------------------- #
+    # A 403 (SEC rejecting the User-Agent) once cached "[]" for every subject, so the build
+    # completed green over an empty graph. Only a 404 is a real answer; nothing else may be
+    # cached, or a transient failure becomes permanent data loss.
+
+    def test_404_caches_empty_result(self, tmp_path, monkeypatch):
+        import urllib.error
+
+        from secgraph.ingestion.ownership import edgar_client
+
+        def not_found(url):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        monkeypatch.setattr(edgar_client, "_throttled_get", not_found)
+        assert edgar_client.fetch_13dg_accessions("0000000002", tmp_path) == []
+        # Cached, so a resume skips this subject rather than re-fetching forever.
+        assert (tmp_path / "0000000002_index.json").read_text() == "[]"
+
+    @pytest.mark.parametrize("status", [403, 429, 500, 503])
+    def test_non_404_raises_and_does_not_cache(self, tmp_path, monkeypatch, status):
+        import urllib.error
+
+        from secgraph.ingestion.ownership import edgar_client
+
+        def blocked(url):
+            raise urllib.error.HTTPError(url, status, "blocked", {}, None)
+
+        monkeypatch.setattr(edgar_client, "_throttled_get", blocked)
+        with pytest.raises(edgar_client.SubmissionsFetchError):
+            edgar_client.fetch_13dg_accessions("0000000003", tmp_path)
+        assert not (tmp_path / "0000000003_index.json").exists()
+
+    def test_transient_error_does_not_cache(self, tmp_path, monkeypatch):
+        from secgraph.ingestion.ownership import edgar_client
+
+        def timeout(url):
+            raise TimeoutError("read timed out")
+
+        monkeypatch.setattr(edgar_client, "_throttled_get", timeout)
+        with pytest.raises(edgar_client.SubmissionsFetchError):
+            edgar_client.fetch_13dg_accessions("0000000004", tmp_path)
+        assert not (tmp_path / "0000000004_index.json").exists()
+
+    @pytest.mark.parametrize(
+        "ua,is_placeholder",
+        [
+            ("public-company-graph research contact@example.com", True),
+            ("Example Corp research team@EXAMPLE.COM", True),
+            ("Alex Woolford alex@realdomain.io", False),
+        ],
+    )
+    def test_placeholder_user_agent_detection(self, ua, is_placeholder):
+        from secgraph.ingestion.ownership import edgar_client
+
+        assert edgar_client.is_placeholder_user_agent(ua) is is_placeholder
 
     @pytest.mark.parametrize(
         "form,expected",

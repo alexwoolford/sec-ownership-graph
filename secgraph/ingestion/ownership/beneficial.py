@@ -25,12 +25,19 @@ from secgraph.ingestion.ownership.bulk_datasets import (
     normalize_cik,
 )
 from secgraph.ingestion.ownership.edgar_client import (
+    SubmissionsFetchError,
     fetch_13dg_accessions,
     fetch_submission_header,
 )
 from secgraph.neo4j.utils import clean_properties_batch
 
 logger = logging.getLogger(__name__)
+
+# Fraction of subjects that may fail to fetch before the crawl is treated as systemically
+# blocked rather than unlucky. Isolated blips over ~65k requests are normal; a fifth of the
+# universe failing means something is wrong (usually SEC 403-ing a placeholder User-Agent),
+# and continuing would write a plausible-looking but silently incomplete graph.
+_MAX_SUBJECT_FAILURE_PCT = 20.0
 
 # The header is organized in blocks: "SUBJECT COMPANY:" then "FILED BY:".
 # Within each block, CENTRAL INDEX KEY / COMPANY CONFORMED NAME are indented.
@@ -198,6 +205,7 @@ def build_edge_rows(
 
     rows: list[dict] = []
     done = 0
+    failed: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
@@ -206,10 +214,31 @@ def build_edge_rows(
             for cik in subject_ciks
         }
         for future in as_completed(futures):
-            rows.extend(future.result())
+            try:
+                rows.extend(future.result())
+            except SubmissionsFetchError as exc:
+                # Tolerate isolated failures (one unreachable subject must not lose a
+                # multi-hour crawl) but never silently: they are counted, and a systemic
+                # rate — e.g. SEC 403-ing every request over a placeholder User-Agent — is
+                # fatal below. Nothing was cached, so a re-run retries these subjects.
+                failed.append(futures[future])
+                log.debug(f"  subject fetch failed: {exc}")
             done += 1
             if done % 250 == 0:
                 log.info(f"  crawled {done:,}/{total:,} subjects, {len(rows):,} edges so far")
+
+    if failed:
+        pct = 100.0 * len(failed) / total if total else 0.0
+        log.warning(f"  ⚠ {len(failed):,}/{total:,} subjects ({pct:.1f}%) could not be fetched")
+        # A handful of blips is normal over ~65k requests; a large fraction means the crawl is
+        # systematically blocked, and continuing would write a plausible-looking partial graph.
+        if pct >= _MAX_SUBJECT_FAILURE_PCT:
+            raise SubmissionsFetchError(
+                f"{len(failed):,}/{total:,} subjects ({pct:.1f}%) failed to fetch — aborting "
+                f"rather than building a silently-incomplete graph. Most likely cause: SEC is "
+                f"rejecting the requests. Set a real SEC_USER_AGENT "
+                f"('Name email@domain') and re-run; nothing was cached, so the retry is clean."
+            )
     return rows
 
 
@@ -256,6 +285,17 @@ def load_beneficial_owners(
         max_filings_per_subject=max_filings_per_subject,
         log=log,
     )
+    if subject_ciks and not rows:
+        # Every 13D/G-driven demo surface (convergence, coalition, control chains) depends on
+        # this layer. Zero edges across the whole universe is never a legitimate result, but it
+        # used to exit 0 and let the build finish "successfully" over an empty graph.
+        raise SubmissionsFetchError(
+            f"crawled {len(subject_ciks):,} subjects and found 0 Schedule 13D/13G edges. "
+            f"This is never a valid outcome for a real universe. Check that SEC_USER_AGENT is "
+            f"a real contact string, and that data/sec_ownership/form13dg/ does not hold "
+            f"empty cached indexes from an earlier blocked run (delete it to force a re-crawl)."
+        )
+
     distinct_owners = len({r["owner_key"] for r in rows})
     resolved = sum(1 for r in rows if r["resolved"])
     resolution_rate = round(resolved / len(rows) * 100, 1) if rows else 0.0

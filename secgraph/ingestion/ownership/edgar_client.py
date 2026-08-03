@@ -46,6 +46,25 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _HEADER_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_nodash}/{acc}.txt"
 
 
+class SubmissionsFetchError(RuntimeError):
+    """A subject's submissions index could not be fetched, and the result is unknown.
+
+    Distinct from "this subject has no 13D/G filings", which is a legitimate empty result and
+    *is* cached. This exception means we do not know, so nothing may be cached — see
+    :func:`fetch_13dg_accessions`.
+    """
+
+
+def is_placeholder_user_agent(ua: str | None = None) -> bool:
+    """True when the SEC User-Agent is still the built-in placeholder.
+
+    ``example.com`` is RFC 2606 reserved, so it is not a declaration of identity. SEC
+    fair-access rejects generic agents with HTTP 403, which used to surface as a silent
+    empty graph. The preflight refuses to start a build in this state.
+    """
+    return "example.com" in (ua if ua is not None else _user_agent()).lower()
+
+
 def _user_agent() -> str:
     import os
 
@@ -102,13 +121,27 @@ def fetch_13dg_accessions(
             pass
     try:
         sub = json.loads(_throttled_get(_SUBMISSIONS_URL.format(cik=subject_cik)))
+    except urllib.error.HTTPError as exc:
+        # A 404 is a real answer: this CIK has no submissions file. Cache the empty result so a
+        # resume skips it. Anything else (403 fair-access rejection, 5xx) is NOT an answer and
+        # must never be cached — caching a 403 permanently zeroes the subject, and because the
+        # default User-Agent is a placeholder that SEC rejects, that used to zero every issuer
+        # while the build still exited 0.
+        if exc.code == 404:
+            logger.debug(f"no submissions file for {subject_cik} (404)")
+            cache_file.write_text("[]")
+            return []
+        raise SubmissionsFetchError(
+            f"EDGAR returned HTTP {exc.code} for CIK {subject_cik}. "
+            f"Not cached. If this is 403, set a real SEC_USER_AGENT "
+            f"(SEC rejects the placeholder contact address)."
+        ) from exc
     except (OSError, urllib.error.URLError, ValueError) as exc:
-        # OSError covers TimeoutError/connection resets that survive retries; a
-        # single unreachable subject must not abort the whole crawl. Cache the
-        # empty result so a resume skips it rather than retrying forever.
-        logger.debug(f"submissions fetch failed for {subject_cik}: {exc}")
-        cache_file.write_text("[]")
-        return []
+        # Transient (timeout / connection reset / malformed body) and already retried by
+        # _throttled_get. Do not cache — a network blip must not become permanent data loss.
+        raise SubmissionsFetchError(
+            f"submissions fetch failed for CIK {subject_cik} after retries: {exc}"
+        ) from exc
     recent = sub.get("filings", {}).get("recent", {})
     forms = recent.get("form", [])
     accessions = recent.get("accessionNumber", [])

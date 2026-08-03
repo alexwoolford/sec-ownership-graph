@@ -55,8 +55,12 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/alexwoolford/sec-ownership-graph"
 
-[tool.setuptools]
-packages = ["secgraph"]
+[tool.setuptools.packages.find]
+# Automatic discovery, NOT a hand-maintained list. `packages = ["secgraph"]` shipped only
+# secgraph/__init__.py — every subpackage (cli, neo4j, ingestion, mcp, schema, core, gds, utils)
+# was omitted from a non-editable install, and a manual list silently reintroduces that every
+# time a subpackage is added.
+include = ["secgraph*"]
 
 [tool.ruff]
 line-length = 100

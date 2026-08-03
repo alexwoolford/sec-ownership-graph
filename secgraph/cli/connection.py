@@ -42,11 +42,17 @@ def get_driver_and_database(
 
 def verify_neo4j_connection(driver, database: str, logger: logging.Logger | None = None) -> bool:
     """
-    Verify Neo4j connection is working.
+    Verify Neo4j connection is working against ``database``.
+
+    ``database`` is forwarded to the session. This matters for the cold-start path: Phase 0
+    passes ``"system"`` because the target database does not exist yet. Previously this argument
+    was accepted and then dropped, so the check fell back to ``NEO4J_DATABASE`` (``secgraph``)
+    and failed with "Could not connect to Neo4j" on an empty server — the build could not
+    connect to the database it was about to create.
 
     Args:
         driver: Neo4j driver instance
-        database: Database name
+        database: Database to open the verification session against
         logger: Optional logger instance
 
     Returns:
@@ -55,9 +61,9 @@ def verify_neo4j_connection(driver, database: str, logger: logging.Logger | None
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    if verify_connection(driver):
-        logger.info("✓ Connected to Neo4j")
+    if verify_connection(driver, database):
+        logger.info(f"✓ Connected to Neo4j (database '{database}')")
         return True
     else:
-        logger.error("✗ Could not connect to Neo4j")
+        logger.error(f"✗ Could not connect to Neo4j database '{database}'")
         return False

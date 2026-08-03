@@ -16,19 +16,48 @@ board interlocks. See `docs/demo_script_activist_desk.md` for what it's *for*, a
 ## Environment & common commands
 
 ```bash
-pip install -e ".[dev]"
-cp .env.sample .env          # fill NEO4J_PASSWORD
+pip install -e ".[dev,llm]"   # NOT just [dev] — that omits openai, which the build needs
+cp .env.sample .env           # fill NEO4J_PASSWORD *and* SEC_USER_AGENT
 
 make test                    # unit suite (fully mocked, no DB)
-make check                   # lint + tests, as CI runs them
+make check                   # lint + tests
+make preflight               # verify build preconditions in seconds (writes nothing)
 make demo                    # activist convergence screen + MNRO timeline
 make prove                   # graph vs flat-SQL head-to-head
 make serve                   # curated MCP tools over stdio
 make build                   # dry-run the phased build; build-exec to run it
 ```
 
-Tests: `pytest tests/ -m "not integration and not contract"`. Contract tests are **skipped unless
-`--run-contract`**. Integration tests skip themselves when `NEO4J_PASSWORD` is unset.
+**Building requires Neo4j Enterprise (or Docker `neo4j:enterprise`) + the GDS plugin**, because
+phase 0 runs `CREATE DATABASE` and the density gate runs `gds.wcc.write`. Community and Aura
+expose a single database named `neo4j`; target it with `make build-exec DB=neo4j`.
+
+**`SEC_USER_AGENT` is required.** The built-in default is a placeholder on the RFC-2606 reserved
+domain `example.com`, which SEC rejects with HTTP 403. `make preflight` refuses to start until it
+is set to a real contact string. Run `make preflight` before any long build — every precondition
+it checks used to surface only after minutes-to-hours of EDGAR crawling.
+
+Tests: `pytest tests/ -m "not integration and not contract"`. One file, one test, one case:
+
+```bash
+pytest tests/unit/test_campaign_timeline.py                       # one file
+pytest tests/unit/test_campaign_timeline.py::test_first_mover     # one test
+pytest tests/ -k "coalition and not custodial"                    # by expression
+```
+
+**There is no CI.** No `.github/` exists; several docstrings say "runs in CI" aspirationally.
+`make check` is the stand-in, and pre-commit (ruff + gitleaks + file hygiene) is the only
+enforcement that actually runs on its own — `pre-commit install` after cloning.
+
+`make check` is **not** a read-only verification: `make lint` runs `ruff check --fix` and
+`ruff format`, so it rewrites source. Use `ruff check` without `--fix` if you need to inspect
+without mutating. `mypy` is configured in `pyproject.toml` but wired into nothing — no make
+target, no hook.
+
+**The `integration` and `contract` markers are registered but unused.** `tests/` contains only
+`unit/`; no test carries either marker today. `conftest.py`'s `--run-contract` gate and the
+`NEO4J_PASSWORD` skip are live scaffolding for lanes that are currently empty — don't go looking
+for integration tests that aren't there.
 
 ## Core conventions (enforced)
 
@@ -75,6 +104,14 @@ adapter could replace it without touching a traversal.
   aborting on the first non-zero exit. The density gate signals NO-GO via exit code 2 and aborts
   fail-closed. Writes `results/secgraph_freshness.json`.
 
+The phase order in `_steps()` encodes hard data dependencies, not preference. Three that will
+silently produce an empty result if reordered: `extract_control_edges` must precede
+`materialize_control_edges` (the latter reads `control_class='control'`, which the former writes);
+both 13D-derived edges (`CONTROLS`, `CO_TARGETS`) must follow `load_beneficial_owners`; and
+`build_cusip_crosswalk` needs the FTD staging step before `load_institutional_holdings` can key 13F
+by CUSIP-9. On `--refresh`, DB creation and the gate are dropped (`build_only`) and the
+materializers gain `--replace`.
+
 ### The traversal must run in the database
 
 All three wins execute as Cypher variable-length patterns (`VarLengthExpand`) over **materialized**
@@ -106,6 +143,36 @@ there** — `tests/unit/test_schema_consistency.py` scans every `.py` file and f
 Declare it in the YAML *first*, then write the query, then
 `python scripts/generate_schema_docs.py --execute`.
 
+`docs/graph_schema.md` is **generated** — never hand-edit it; regenerate from the YAML.
+
+### The density gate (what blocks a build)
+
+`density.py` projects an undirected company↔company graph through shared `DIRECTOR_OF`/`OFFICER_OF`
+insiders (`TEN_PCT_OWNER_OF` is deliberately excluded — a stake is not a governance tie and dominant
+holders would create spurious hubs), runs `gds.wcc.write`, and checks three thresholds:
+
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `GATE_MIN_IN_COMPONENT_PCT` | 60.0 | % of companies in a size-≥2 component |
+| `GATE_MIN_GIANT_PCT` | 25.0 | giant component as % of universe |
+| `GATE_MIN_MULTIHOP_PAIRS` | 1 | ≥1 concrete ≥3-hop chain |
+
+Any miss → exit 2 → the build aborts at step 5 of 14, before the downstream layers load. The
+remedy is more Form 3/4/5 history: `make build-exec QUARTERS_345=16`, or
+`--quarters-345 N` on `build_secgraph.py`. Staged zips are cached, so re-running only fetches the
+new quarters. Writing `ownership_component` is the gate's only mutation; requires GDS.
+
+**Why history matters more than it looks:** a Form 4 is filed per *transaction*, so one quarter
+surfaces only the directors who happened to trade in it (~3-5 per issuer) — well short of the
+~11.8 distinct directors per company that the 60%-in-component threshold needs. Coverage
+saturates with depth rather than scaling linearly, because `insiders.py` MERGEs on the
+(insider, company) pair. The default is `_QUARTERS_345 = 12` for this reason; it was 4, which
+NO-GOs a cold start.
+
+The gate's path sampling uses **unseeded `ORDER BY rand()`** (`density.py:125`), so a marginal
+graph can PASS one run and FAIL the next. Not yet fixed — treat a borderline result as
+inconclusive and stage more quarters.
+
 ## Gotchas that have cost real time
 
 - **`coalesce()` on nullable properties.** `NONE(n IN nodes(p) WHERE n.is_custodial)` evaluates to
@@ -122,6 +189,43 @@ Declare it in the YAML *first*, then write the query, then
   2024 coverage step-up. Never imply a trend from those.
 - **MCP stdio and stdout.** `serve_ownership_mcp.py` configures logging to **stderr** directly,
   because the shared `setup_logging` dry-run path writes to stdout and would corrupt the protocol.
+- **A system `NEO4J_PASSWORD` silently overrides `.env`.** pydantic-settings ranks real env vars
+  above the `.env` file, so an exported password wins and `settings.py` warns rather than fails.
+  `unset NEO4J_PASSWORD`, or call `get_settings_from_env_file()` to force `.env`.
+- **The committed `.venv/` is empty** — three files, no packages. `python` resolves to Anaconda,
+  which is where the dev install actually lives. Don't trust `.venv/bin/python`; it has no pytest.
+- **`fastmcp` is a core dependency but the MCP test `importorskip`s it.** So
+  `tests/unit/test_ownership_mcp_server.py` skips silently in an environment missing it (currently
+  the case: 223 passed, **1 skipped**). A green suite does not mean the MCP surface was exercised —
+  check for the skip before believing the serving layer is covered.
+- **Underscores are illegal in Neo4j database names.** `secgraph_repro` is rejected; use
+  `secgraph-repro`. And a dashed name must be **backtick-quoted** in `CREATE DATABASE`, or Cypher
+  reads the dash as an operator. Both cost real time; `ownership_create_database.py` now validates
+  the name up front instead of surfacing a driver stack trace.
+- **`verify_connection` needs a database-appropriate probe.** `RETURN 1` is rejected on the
+  `system` database ("can only be executed in a user database"), so `system` is probed with
+  `SHOW DATABASES`. Phase 0 depends on this: it must verify against `system` because the target
+  database does not exist yet.
+- **`gds.version()` is unavailable on `system`.** Probe it on a user database — the preflight
+  falls back to `neo4j` when the target database doesn't exist yet.
+- **A 404 is data; a 403 is not.** `edgar_client` caches an empty result *only* on 404. Caching
+  any other failure is how a placeholder User-Agent once produced a green build over an empty
+  graph: every issuer cached `[]`, and the loader exited 0. `beneficial.py` now aborts if ≥20% of
+  subjects fail or if zero 13D/G edges resolve universe-wide.
+
+## Packaging: use automatic discovery, never a manual list
+
+`pyproject.toml` uses `[tool.setuptools.packages.find] include = ["secgraph*"]`. It previously
+declared `packages = ["secgraph"]`, which shipped **only** `secgraph/__init__.py` — every
+subpackage (`cli/`, `neo4j/`, `ingestion/`, `mcp/`, `schema/`, `core/`, `gds/`, `utils/`) was
+omitted from an install. Verified: 1 file before, 43 after. Don't go back to a manual list; a new
+subpackage would silently reintroduce it.
+
+Note this bit harder than "non-editable installs only": `scripts/*.py` put `scripts/` on
+`sys.path[0]`, **not** the repo root, so `python scripts/build_secgraph.py` needs a real install.
+The test suite passed regardless because pytest inserts the rootdir. If you see
+`ModuleNotFoundError: No module named 'secgraph'`, the package isn't installed —
+`pip install -e ".[dev,llm]"`.
 
 ## Changing a published figure
 
@@ -129,3 +233,15 @@ Several numbers appear in `README.md`, `docs/`, and `results/*.md` (e.g. the 16-
 11 control chains, MNRO's 96-day gap). If a fix changes one, **update every occurrence and state
 the reason**. Silently moving a headline number is the fastest way to lose a technical audience;
 the precision fix that took the coalition from 22 to 16 is documented for exactly that reason.
+
+Grep before editing — the current call sites are:
+
+- **16-member coalition** — `docs/reference_architecture_secgraph.md` (×2, incl. the 22→16 note),
+  `docs/demo_script_activist_desk.md`, `results/graph_native_proof.md`
+- **11 control chains** — `docs/reference_architecture_secgraph.md`
+- **96 days (MNRO)** — `README.md` (×2), both `docs/*.md`, `results/activist_convergence.md` (×2)
+
+`results/activist_convergence.md` and `results/graph_native_proof.md` are regenerable
+(`make demo` / `make prove` with `--markdown`), so prefer regenerating over hand-editing.
+`results/secgraph_freshness.json` is the build's own output and is the only committed JSON under
+`results/` — it currently reads `as_of: 2026-07-24`, which is what every served answer stamps.
