@@ -287,6 +287,15 @@ def _print_plan(steps: list[Step], *, database: str, refresh: bool, logger_insta
 # 600 KB per cached 13D body across ~14k accessions. 20 GB is comfortable headroom.
 _MIN_FREE_DISK_GB = 20.0
 
+# (label, property) pairs every loader MERGEs on. Mirrors schema/graph_schema.yaml's
+# `constraints:` block; the preflight checks these exist before a multi-hour load.
+_REQUIRED_CONSTRAINTS = (
+    ("Company", "cik"),
+    ("Insider", "cik"),
+    ("InstitutionalManager", "cik"),
+    ("BeneficialOwner", "owner_key"),
+)
+
 
 def preflight_checks(
     *,
@@ -400,9 +409,51 @@ def preflight_checks(
         except Exception as exc:  # pragma: no cover - defensive
             log.warning(f"  ? could not inspect databases: {exc}")
 
-    # GDS backs the density gate (WCC) and the coalition projection. Without it the gate cannot
-    # run at all, and the gate is what authorizes the rest of the build.
-    #
+    # Uniqueness constraints on an *existing* target database. Phase 0 creates them, but it is
+    # `CREATE DATABASE ... IF NOT EXISTS` — so pointing at a database that already exists but was
+    # never initialised skips them silently. Without them every `MERGE (i:Insider {cik})` in a
+    # 5,000-row batch does a full label scan: measured at ~500 edges/min instead of ~50,000, i.e.
+    # hours of apparent progress on a load that should take minutes.
+    if database in existing:
+        try:
+            with driver.session(database=database) as session:
+                found = {
+                    tuple(r["labelsOrTypes"] or []) + tuple(r["properties"] or [])
+                    for r in session.run(
+                        "SHOW CONSTRAINTS YIELD labelsOrTypes, properties "
+                        "RETURN labelsOrTypes, properties"
+                    )
+                }
+            missing = [
+                f"{label}.{prop}"
+                for label, prop in _REQUIRED_CONSTRAINTS
+                if (label, prop) not in found
+            ]
+            if missing:
+                failures.append(
+                    f"database '{database}' exists but is missing uniqueness constraint(s): "
+                    f"{', '.join(missing)}.\n"
+                    "        Loaders MERGE on these keys, so without them every batch does a "
+                    "full label scan (hours instead of minutes).\n"
+                    f"        Fix: python scripts/ownership_create_database.py "
+                    f"--database {database} --execute"
+                )
+            else:
+                log.info(f"  ✓ constraints present ({len(_REQUIRED_CONSTRAINTS)} uniqueness)")
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(f"  ? could not inspect constraints: {exc}")
+
+    # GDS is needed on BOTH sides: the `graphdatascience` Python client and the server plugin.
+    # Checking only the server let the density gate die on a bare ImportError at step 5 of 14.
+    if importlib.util.find_spec("graphdatascience") is None:
+        failures.append(
+            "the 'graphdatascience' Python client is not installed, but the density gate "
+            "needs it.\n"
+            '        Fix: pip install -e ".[dev,llm]"'
+        )
+    else:
+        log.info("  ✓ graphdatascience client installed")
+
     # gds.version() must be called on a *user* database — it is unavailable on `system`. On a
     # cold start the target database does not exist yet, so probe any existing user database.
     existing = _existing_databases(driver)
