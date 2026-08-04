@@ -223,10 +223,15 @@ inconclusive and stage more quarters.
   `unset NEO4J_PASSWORD`, or call `get_settings_from_env_file()` to force `.env`.
 - **The committed `.venv/` is empty** — three files, no packages. `python` resolves to Anaconda,
   which is where the dev install actually lives. Don't trust `.venv/bin/python`; it has no pytest.
-- **`fastmcp` is a core dependency but the MCP test `importorskip`s it.** So
-  `tests/unit/test_ownership_mcp_server.py` skips silently in an environment missing it (currently
-  the case: 223 passed, **1 skipped**). A green suite does not mean the MCP surface was exercised —
-  check for the skip before believing the serving layer is covered.
+- **The declared dependency pins do not match what works.** `pyproject.toml` says
+  `neo4j>=5.18.1,<6.0.0`, but the build was verified end-to-end on driver **6.1.0** against Neo4j
+  2026.05; likewise `pandas` and `pytest` run above their ceilings. `graphdatascience` (1.22) and
+  `fastmcp` (2.14.7) had to be installed by hand — neither the density gate nor the MCP surface
+  works without them. Treat the upper bounds as untested rather than authoritative.
+- **`fastmcp` is a core dependency but the MCP test `importorskip`s it.** With it absent,
+  `tests/unit/test_ownership_mcp_server.py` skips silently and a green suite tells you nothing
+  about the serving layer. Install it and the count goes 273 passed / 1 skipped → **281 passed /
+  0 skipped**; those 8 tests had never run. Check for the skip before trusting MCP coverage.
 - **Underscores are illegal in Neo4j database names.** `secgraph_repro` is rejected; use
   `secgraph-repro`. And a dashed name must be **backtick-quoted** in `CREATE DATABASE`, or Cypher
   reads the dash as an operator. Both cost real time; `ownership_create_database.py` now validates
