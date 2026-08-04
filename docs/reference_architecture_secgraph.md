@@ -169,6 +169,63 @@ for the scripted walkthrough.
 
 ---
 
+## A second reading: the same traversal as a UBO / counterparty chain
+
+The demo above is written for an activist desk, because that is the walkthrough that works. But
+`CHAIN` is worth reading twice, because **it is literally an ultimate-beneficial-ownership
+traversal** — parent → subsidiary → sub-subsidiary through verified ≥50% stakes, hard-keyed on CIK,
+every hop citing an SEC accession number. Nothing has to be built for that reading; it is the same
+Cypher:
+
+```
+control_chain("TMUS")  →  DEUTSCHE TELEKOM AG —74.3%→ T-Mobile US, Inc.  ($94.6B institutional)
+                          cited: 0001193125-13-214474 (2013-05-10)
+```
+
+That matters commercially because the budget behaves differently. An event-driven desk buys
+finished signals, not infrastructure — and this asset explicitly has no alpha (see
+[Honest limits](#honest-limits-part-of-what-makes-it-defensible)). Risk, compliance and stewardship
+functions buy *auditability*, and their spend is triggered by exam findings and reporting deadlines
+rather than by conviction. The absence of alpha stops being an apology in that framing.
+
+**What already supports it, with no new code:**
+
+- **Abstain-or-cite is enforced, not aspirational.** `abstained=True` is a typed field with
+  machine-readable reasons (`no_verified_control_chain`, `company_not_found`), and an answer never
+  comes from a `stake`/`unknown` edge. Ten of ten mega-caps abstain on `control_chain` — the tool
+  says "no" far more often than it says "yes".
+- **Every hop is independently citable.** The traversal returns parallel `accessions` /
+  `filing_dates` / `pcts` arrays, so a four-hop chain yields four filings, not one summary.
+- **The serving surface cannot write.** `read_only=False` *raises*; there is no Cypher passthrough;
+  all seven tools carry `readOnlyHint=True`. The scrubs and thresholds that make answers correct
+  cannot be bypassed by a caller.
+- **Provenance travels with the answer.** Every response carries the `as_of` stamp and the build
+  records its inputs — the pinned as-of date, the resolved staging windows, and whether control
+  figures came from the committed CSV or a live model run.
+- **Deterministic.** The served path is LLM-free Cypher. The one model-dependent step (reading
+  percent-of-class off 13D cover pages) runs offline at build time and is pinned to a committed
+  CSV, so an answer is reproducible without an API key.
+
+**What this reading does *not* support — and these are disqualifying for a sanctions use case:**
+
+- **No sanctions or watchlist data.** There is no OFAC/SDN label, no jurisdiction, no country. A
+  screening traversal has no seed set. Calling this "sanctions screening" would be
+  aggregate-ownership detection wearing a compliance label.
+- **No aggregate ownership roll-up.** `CONTROLS` fires on a *single* ≥50% stake. The OFAC 50% rule
+  needs the *sum* across converging paths, and this data cannot support that: 13D co-filers each
+  restate the group total (twelve McCann family members each report the same 38.9% of
+  1-800-FLOWERS, so a naive sum reads 485%), 546 issuers sum above 100%, there is no filing-group
+  identifier to collapse them, and the 13G layer carries **no** percent data at all.
+- **US SEC registrants with a ticker only** — ~8,000 issuers. No private companies, no foreign
+  subsidiaries, no global corporate hierarchy. Comprehensive UBO needs a data apparatus this
+  deliberately does not have.
+
+The honest positioning is a **US-public-company control and governance layer with citation-grade
+provenance**, not a UBO product. That is a narrower claim than the traversal could be made to look
+like, and it is the one the data actually earns.
+
+---
+
 ## Honest limits (part of what makes it defensible)
 
 - **CIK-keyed only.** Understates family/affiliate structure; deliberately conservative — no
@@ -198,7 +255,7 @@ for the scripted walkthrough.
   exposure sizing), which is where SEC DERA XBRL would earn its keep if the audience shifts to
   credit risk.
 - **Chain *depth* is a small-cap signal; single-hop control is not.** Measured on the built graph,
-  **27 of 825** controlled issuers carry ≥$10B of institutional ownership and 105 carry ≥$1B —
+  **20 of 825** controlled issuers carry ≥$10B of institutional ownership and 99 carry ≥$1B —
   Deutsche Telekom 74.3% of T-Mobile US, Brookfield 72.9% of Brookfield Asset Management, GE 62.6%
   of Baker Hughes, Woodbridge 70% of Thomson Reuters. The **multi-hop** pyramids remain small-cap
   (the largest, Teekay Tankers, is ~$1.5B), so depth is the governance/minority-risk screen while

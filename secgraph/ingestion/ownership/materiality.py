@@ -6,8 +6,8 @@ control relationship over T-Mobile US and one over a $30 shell rendered as peer 
 demo's own docs conceded "no materiality data — results cannot be ranked by 'does this matter'"
 and called it the largest remaining gap.
 
-The gap turned out to be presentational, not a data gap. Measured on the built graph, **27 of 825
-controlled issuers carry ≥$10B** of institutional ownership and 105 carry ≥$1B — Deutsche Telekom
+The gap turned out to be presentational, not a data gap. Measured on the built graph, **20 of 825
+controlled issuers carry ≥$10B** of institutional ownership and 99 carry ≥$1B — Deutsche Telekom
 at 74.3% of T-Mobile, GE at 62.6% of Baker Hughes, Woodbridge at 70% of Thomson Reuters. The
 activist coalition already co-targets Deere, Freeport, Ecolab and Occidental. **Those findings were
 always there; there was simply no column to sort by, so the output surfaced closed-end funds and

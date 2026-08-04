@@ -19,7 +19,7 @@ cross-checked; the figures below agree exactly.
 - 1077 verified control edges · 957 controllers · 12 hinges → **22 multi-hop control chains** (deepest 3 hops).
 - Graph engine: `cypher VarLengthExpand over CONTROLS|SAME_ENTITY_AS` (cross-check vs the flat-SQL-equivalent Python walk: agrees).
 - **Flat SQL:** 1077 single-hop control edges (one JOIN, no recursion).
-- **Recursive CTE (`WITH RECURSIVE`):** 30 paths at >=2 hops, deepest 3, in 0.71 ms — **agrees with the graph**. A warehouse can reach this answer; the graph's advantage is one declarative pattern per question rather than a hand-built recursion each time.
+- **Recursive CTE (`WITH RECURSIVE`):** 30 paths at >=2 hops, deepest 3, in 0.7 ms — **agrees with the graph**. A warehouse can reach this answer; the graph's advantage is one declarative pattern per question rather than a hand-built recursion each time.
 - *Scope, stated plainly: these chains are dominated by micro/nano-cap issuers. Read this as a **small-cap governance and credit screen** — where control is concentrated and minority holders are exposed — not as a large-cap tool. Large caps have no >=50% holder, and the query correctly abstains on them.*
 
   - [3h] AMERICAN REALTY TRUST INC → TRANSCONTINENTAL REALTY INVESTORS INC (60%) → AMERICAN REALTY INVESTORS INC (60%) → INCOME OPPORTUNITY REALTY INVESTORS INC /TX/ (60%)
@@ -31,7 +31,7 @@ cross-checked; the figures below agree exactly.
 ## Win 2 — PATH: board-interlock shortestPath
 
 - **Flat SQL:** who sits on >=2 boards (a GROUP BY), not reachability A→Z.
-- **Recursive BFS:** `AAPL`→`JPM` 1 hops (35.17 ms); `KO`→`BA` 2 hops (21.75 ms); `NVDA`→`WMT` 2 hops (14.29 ms). Same paths as the graph, at higher cost — frontier expansion rather than bidirectional search, and it needs an explicit hop cap to stay bounded.
+- **Recursive BFS:** `AAPL`→`JPM` 1 hops (38.23 ms); `KO`→`BA` 2 hops (21.13 ms); `NVDA`→`WMT` 2 hops (13.78 ms). Same paths as the graph, at higher cost — frontier expansion rather than bidirectional search, and it needs an explicit hop cap to stay bounded.
 - *Read the bridging director, not the path. Well-connected pairs are linked within a handful of hops, so "are these two boards connected?" is effectively always yes and carries no information. What is informative is **who** the named connector is, and which boards are structurally central — a governance-concentration screen. The measured hop distribution for this build is in `results/ownership_graph_density.json`.*
 
   - `AAPL` → `JPM`: AAPL — JPM *(via Gorsky Alex)*
@@ -44,7 +44,7 @@ cross-checked; the figures below agree exactly.
 - *The raw component is 39; the scrub removes 14 custodial/index hub(s) that bridge unrelated activists. Substring matching is why this needs care: the scrub once matched `RBC` but not `ROYAL BANK OF CANADA`, so RBC and Toronto Dominion were counted as activists and inflated the figure. **Scrubbing is a precision choice, not a change to the underlying data** — hubs are labelled `is_custodial` and excluded at projection time, so the co-filing facts survive and the choice stays auditable.*
 - Graph engine: `cypher variable-depth reachability over CO_TARGETS` (cross-check vs the flat-SQL-equivalent Python walk: agrees).
 - **Flat SQL:** 167 co-targeting pairs (a self-join), not the component.
-- **Recursive CTE:** largest component 25 members in 1.98 ms — **agrees with the graph**.
+- **Recursive CTE:** largest component 25 members in 1.91 ms — **agrees with the graph**.
 - Largest coalition members: 180 DEGREE CAPITAL CORP. /NY/, Albion River Management LLC, B. Riley Financial, Inc., Bulldog Investors, Bulldog Investors General Partnership, Bulldog Investors, LLP, CANNELL CAPITAL LLC, CASCADE INVESTMENT, L.L.C., DEASON DARWIN, DIGIRAD CORP, DOLAN CHARLES F, DOLAN JAMES LAWRENCE, Fund 1 Investments, LLC, GABELLI MARC, GAMCO INVESTORS, INC. ET AL.
 
 ## The rule

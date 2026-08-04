@@ -163,7 +163,7 @@ Read these before demoing — they are part of what makes the rest credible.
   New 13Ds can also *remove* a convergence hit, because the screen measures a total span rather
   than a rolling window. Compare against `results/secgraph_freshness.json` (`as_of`) before
   concluding something broke.
-- **Chain *depth* is a small-cap signal; single-hop control is not.** 27 of 825 controlled issuers
+- **Chain *depth* is a small-cap signal; single-hop control is not.** 20 of 825 controlled issuers
   carry ≥$10B of institutional ownership — Deutsche Telekom holds 74.3% of T-Mobile US, GE held
   62.6% of Baker Hughes. But the **multi-hop** pyramids top out near $1.5B, so read a deep chain as
   a small-cap governance screen and a single-hop one as general-purpose. Most large caps have no

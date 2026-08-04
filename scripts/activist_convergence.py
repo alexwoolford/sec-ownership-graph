@@ -33,6 +33,7 @@ from secgraph.ingestion.ownership.campaign_timeline import (
     DEFAULT_MIN_ACTIVISTS,
     DEFAULT_WINDOW_DAYS,
     CampaignTimelineEngine,
+    format_institutional_value,
 )
 from secgraph.ingestion.ownership.pipeline import provenance_line
 
@@ -63,6 +64,7 @@ def render_markdown(scan, timelines: list, generated: str) -> str:
         lines.append(
             f"## {c['ticker'] or c['cik']} — {c['name']}"
             f" · {h['franchise_count']} franchises within {h['span_days']} days"
+            f"{format_institutional_value(c.get('institutional_value_usd'))}"
         )
         lines.append("")
         lines.append("| Date | Filer | % of class | Accession |")

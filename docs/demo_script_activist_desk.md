@@ -145,7 +145,7 @@ sits on both boards, which is who you'd actually call.
   where one manager files through seven affiliated entities — but a first-time activist is missed.
 - **Only 13D/13G dates are a time series.** Board and officer edges are a 2022–2026 keep-latest
   snapshot; 13F has a 2024 coverage step-up. Don't read trends into them.
-- **Deep chains are a small-cap tool; single-hop control is not.** 27 of 825 controlled issuers
+- **Deep chains are a small-cap tool; single-hop control is not.** 20 of 825 controlled issuers
   carry ≥$10B (Deutsche Telekom → T-Mobile at 74.3%), but the multi-hop pyramids top out near
   $1.5B. Read depth as the small-cap governance signal.
 - **CIK-keyed only.** Deliberately conservative: it understates family/affiliate structure rather

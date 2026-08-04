@@ -88,7 +88,7 @@ def test_control_chain_is_not_described_as_small_cap_only():
 
     The tool catalog and the control_chain docstring both used to assert the verified chains were
     "all micro/nano-cap", which told an agent to deprioritize a tool that returns Deutsche
-    Telekom's 74.3% of T-Mobile US. 27 of 825 controlled issuers carry >=$10B. The caveat is
+    Telekom's 74.3% of T-Mobile US. 20 of 825 controlled issuers carry >=$10B. The caveat is
     true of the MULTI-HOP pyramids only, and must stay scoped to them.
     """
     from secgraph.mcp.ownership_server import _SECGRAPH_SCHEMA

@@ -12,17 +12,7 @@
 
 **5 issuers** cleared the screen.
 
-## MNRO — MONRO, INC. · 2 franchises within 96 days
-
-| Date | Filer | % of class | Accession |
-| --- | --- | --- | --- |
-| 2025-08-01 | GAMCO INVESTORS, INC. ET AL | 5.01% | `0000807249-25-000101` |
-| 2025-11-05 | ICAHN CARL C | 14.79% | `0001539497-25-002847` |
-
-**First mover:** GAMCO INVESTORS, INC. ET AL (2025-08-01).
-  - ICAHN CARL C followed 96 days later.
-
-## SION — Sionna Therapeutics, Inc. · 2 franchises within 5 days
+## SION — Sionna Therapeutics, Inc. · 2 franchises within 5 days, $1.9B institutional
 
 | Date | Filer | % of class | Accession |
 | --- | --- | --- | --- |
@@ -32,7 +22,7 @@
 **First mover:** ORBIMED ADVISORS LLC (2025-02-13).
   - RA CAPITAL MANAGEMENT, L.P. followed 5 days later.
 
-## GDV — GABELLI DIVIDEND & INCOME TRUST · 2 franchises within 78 days
+## GDV — GABELLI DIVIDEND & INCOME TRUST · 2 franchises within 78 days, $707M institutional
 
 | Date | Filer | % of class | Accession |
 | --- | --- | --- | --- |
@@ -42,7 +32,17 @@
 **First mover:** Saba Capital Management, L.P. (2024-08-01).
   - GAMCO INVESTORS, INC. ET AL followed 78 days later.
 
-## KTF — DWS MUNICIPAL INCOME TRUST · 2 franchises within 127 days
+## MNRO — MONRO, INC. · 2 franchises within 96 days, $606M institutional
+
+| Date | Filer | % of class | Accession |
+| --- | --- | --- | --- |
+| 2025-08-01 | GAMCO INVESTORS, INC. ET AL | 5.01% | `0000807249-25-000101` |
+| 2025-11-05 | ICAHN CARL C | 14.79% | `0001539497-25-002847` |
+
+**First mover:** GAMCO INVESTORS, INC. ET AL (2025-08-01).
+  - ICAHN CARL C followed 96 days later.
+
+## KTF — DWS MUNICIPAL INCOME TRUST · 2 franchises within 127 days, $75M institutional
 
 | Date | Filer | % of class | Accession |
 | --- | --- | --- | --- |
@@ -52,7 +52,7 @@
 **First mover:** Saba Capital Management, L.P. (2023-11-13).
   - Bulldog Investors, LLP followed 127 days later.
 
-## PGZ — Principal Real Estate Income Fund · 2 franchises within 13 days
+## PGZ — Principal Real Estate Income Fund · 2 franchises within 13 days, $15M institutional
 
 | Date | Filer | % of class | Accession |
 | --- | --- | --- | --- |
