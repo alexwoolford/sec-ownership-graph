@@ -240,6 +240,19 @@ inconclusive and stage more quarters.
   any other failure is how a placeholder User-Agent once produced a green build over an empty
   graph: every issuer cached `[]`, and the loader exited 0. `beneficial.py` now aborts if ≥20% of
   subjects fail or if zero 13D/G edges resolve universe-wide.
+- **`IncompleteRead` is an `HTTPException`, not an `OSError`.** A retry list of
+  `(TimeoutError, URLError, OSError)` silently misses a truncated response — the commonest symptom
+  of a network drop — and it killed a 2.5-hour crawl. Use `_TRANSIENT_FETCH_ERRORS`. Related: a
+  narrow `except` around `future.result()` on a thread pool *looks* fault-tolerant and isn't; any
+  uncaught worker exception ends the whole run.
+- **One `BENEFICIAL_OWNER_OF` edge per (owner, company, filing_type).** The MERGE key collapses
+  every amendment, so `accession_number` and `filing_date` hold **whichever filing the crawl wrote
+  last**, not the first or the latest. Consequences: an activist's earlier 13D on the same issuer
+  is invisible, and a `--since` cutoff can therefore exclude a filing the published memo cited.
+  This is why a rebuild showed 7 convergence issuers instead of 8 — HRI's Icahn edge carried a
+  2022-12-15 accession rather than the published 2023-01-27 one, so `--since 2023-01-01` dropped
+  it; `--since 2022-01-01` returns all 8. Not a bug in the rebuild, but treat per-edge accessions
+  as *an* citation, not *the* full filing history.
 
 ## Packaging: use automatic discovery, never a manual list
 
