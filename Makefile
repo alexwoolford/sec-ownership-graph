@@ -53,7 +53,7 @@ preflight:
 
 # --- Demo surfaces (read-only) ---------------------------------------------- #
 demo:
-	$(PYTHON) scripts/activist_convergence.py --database $(DB) --since 2023-01-01 --timeline MNRO
+	$(PYTHON) scripts/activist_convergence.py --database $(DB) --since 2022-01-01 --timeline MNRO
 
 prove:
 	$(PYTHON) scripts/prove_graph_native_wins.py --database $(DB)

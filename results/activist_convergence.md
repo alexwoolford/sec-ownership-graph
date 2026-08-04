@@ -1,8 +1,14 @@
 # Activist convergence screen — `secgraph`
 
-*Generated 2026-08-02, read-only. Issuers where two or more recognised activist*
-*franchises filed Schedule 13D inside a rolling window. Every line is citable to an*
+*Generated 2026-08-03, read-only. Issuers where two or more recognised activist*
+*franchises filed Schedule 13D within a bounded span. Every line is citable to an*
 *SEC accession number.*
+
+> **Provenance.** Data as of `2026-06-30` · staging pinned to `2026-06-30` · Form 3/4/5 window `2022q3–2026q2` (16 quarters) · control figures from `reference_csv`. Figures below are specific to this window: a rebuild with a different `--as-of` will legitimately differ.
+
+> **How to read the span.** The window is measured first-to-last filing, not rolling, so
+> a *third* franchise filing later can push an issuer's span past the limit and drop it
+> off this screen. New data can therefore remove a hit as well as add one.
 
 **8 issuers** cleared the screen.
 
@@ -66,15 +72,15 @@
 **First mover:** Saba Capital Management, L.P. (2023-10-03).
   - Bulldog Investors, LLP followed 13 days later.
 
-## HRI — HERC HOLDINGS INC · 2 franchises within 3 days
+## HRI — HERC HOLDINGS INC · 2 franchises within 46 days
 
 | Date | Filer | % of class | Accession |
 | --- | --- | --- | --- |
-| 2023-01-27 | ICAHN CARL C | 4.75% | `0001539497-23-000087` |
+| 2022-12-15 | ICAHN CARL C | 5.26% | `0001539497-22-001918` |
 | 2023-01-30 | GAMCO INVESTORS, INC. ET AL | 1.85% | `0000807249-23-000007` |
 
-**First mover:** ICAHN CARL C (2023-01-27).
-  - GAMCO INVESTORS, INC. ET AL followed 3 days later.
+**First mover:** ICAHN CARL C (2022-12-15).
+  - GAMCO INVESTORS, INC. ET AL followed 46 days later.
 
 ## LFCR — LIFECORE BIOMEDICAL, INC. \DE\ · 2 franchises within 2 days
 
@@ -89,11 +95,8 @@
 ## Full ownership timeline — MONRO, INC.
 
 ```
-Ownership timeline — MONRO, INC. (16 dated filings):
-  2019-02-13  13G           Arlington Value Capital, LLC (other_holder) [0001606587-19-000254]
-  2019-02-14  13G           PRICE T ROWE ASSOCIATES INC /MD/ (other_holder) [0000080255-19-002453]
-  2019-02-14  13G           Clearbridge Investments, LLC (other_holder) [0001567619-19-004250]
-  2019-02-14  13G           CLEARBRIDGE, LLC (other_holder) [0001567619-19-004229]
+Ownership timeline — MONRO, INC. (13 dated filings):
+  2022-08-10  13G           PRICE T ROWE ASSOCIATES INC /MD/ (other_holder) [0000080255-22-002473]
   2022-08-10  13G           T. Rowe Price Investment Management, Inc. (passive_index) [0001897612-22-000249]
   2022-12-12  13G           WASATCH ADVISORS LP (other_holder) [0000814133-22-000122]
   2023-01-20  13G           BlackRock Inc. (passive_index) [0001306550-23-001491]

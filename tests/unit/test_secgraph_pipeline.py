@@ -54,14 +54,40 @@ class TestSteps:
         assert scripts.index("measure_ownership_density.py") < scripts.index(
             "materialize_interlock_edges.py"
         )
-        # Beneficial owners must precede control extraction.
-        assert scripts.index("load_beneficial_owners.py") < scripts.index(
-            "extract_control_edges.py"
-        )
+        # Beneficial owners must precede whichever control step is active — the committed-CSV
+        # loader or the LLM extractor. Exactly one is present unless --extract-control asks for
+        # both, so assert on the control step generically rather than naming one.
+        control_steps = [
+            i
+            for i, s in enumerate(scripts)
+            if s in {"load_control_figures.py", "extract_control_edges.py"}
+        ]
+        assert control_steps, "the plan must include a control-figures step"
+        assert scripts.index("load_beneficial_owners.py") < min(control_steps)
+        # ...and control figures must precede the CONTROLS materializer, which reads them.
+        assert max(control_steps) < scripts.index("materialize_control_edges.py")
         # CUSIP crosswalk must precede the 13F holdings load.
         assert scripts.index("build_cusip_crosswalk.py") < scripts.index(
             "load_institutional_holdings.py"
         )
+
+    def test_control_step_selection(self, monkeypatch, tmp_path):
+        """CSV present → deterministic loader only; --extract-control → CSV then LLM fill."""
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        default = [s.script for s in p._steps("secgraph", refresh=False)]
+        assert "load_control_figures.py" in default
+        assert "extract_control_edges.py" not in default
+
+        both = [s.script for s in p._steps("secgraph", refresh=False, extract_control=True)]
+        assert both.index("load_control_figures.py") < both.index("extract_control_edges.py")
+
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", tmp_path / "absent.csv")
+        no_csv = [s.script for s in p._steps("secgraph", refresh=False)]
+        assert "extract_control_edges.py" in no_csv
+        assert "load_control_figures.py" not in no_csv
 
 
 class _FakeSession:

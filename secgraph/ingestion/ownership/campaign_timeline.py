@@ -25,7 +25,8 @@ is what makes the output demo-grade — at the cost of recall, which is the righ
 reported explicitly in the result metadata rather than hidden.
 
 Only ``BENEFICIAL_OWNER_OF.filing_date`` is treated as a time series. ``DIRECTOR_OF`` /
-``OFFICER_OF`` are a 2023–2026 keep-latest snapshot and 13F ``HOLDS`` has a 2024 coverage
+``OFFICER_OF`` are a keep-latest snapshot over the staged Form 3/4/5 window and 13F
+``HOLDS`` has a 2024 coverage
 step-up, so neither is used for sequencing here.
 """
 

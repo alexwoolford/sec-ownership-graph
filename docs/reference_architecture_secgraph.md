@@ -29,7 +29,7 @@ materialized derived edges — not as a flat `SELECT` plus a client-side Python 
 distinction is load-bearing: a client-side walk is exactly what a warehouse reproduces, so it
 would have made the claim unearned. The Python adjacency walkers retained in
 `graph_native_proof.py` are deliberately the **flat-SQL side** of the head-to-head, and the two
-implementations are cross-checked (they agree: 11 chains / 16-member coalition).
+implementations are cross-checked (they agree: 11 chains / 13-member coalition).
 
 **The claim, stated precisely.** SQL cannot express *a single query* whose traversal depth is
 decided by the data. A warehouse can still reach the same answers via a recursive CTE or
@@ -130,24 +130,33 @@ for the scripted walkthrough.
 
 **Reproducible headline answers** (live against `secgraph`):
 
-- `activist_convergence(since='2023-01-01')` → 8 issuers, incl. **MNRO** (GAMCO → Icahn, 96 days),
+- `activist_convergence(since='2022-01-01')` → 8 issuers, incl. **MNRO** (GAMCO → Icahn, 96 days),
   **SION** (OrbiMed → RA Capital, 5 days), **GDV** (Saba raids a Gabelli fund; GAMCO defends).
 - `campaign_timeline("MNRO")` → GAMCO **4.0%** on 2025-08-01, then **Icahn 14.79%** exactly
   **96 days later**; BlackRock/Dimensional correctly labelled index money, Nomura a custodian.
-- `activist_coalition("ICAHN CARL C")` → the **16-member** scrubbed cluster, ~5 hops
-  (Icahn, GAMCO/Gabelli, Bulldog/Goldstein, Karpus, Saba, Cannell, Royce, Dolan/Malone/Maffei).
+- `activist_coalition("ICAHN CARL C")` → the **13-member** scrubbed cluster, ~5 hops
+  (Icahn, GAMCO/Gabelli, Bulldog/Goldstein, Karpus, Saba, Cannell, Royce, Malone).
 - `control_chain("Income Opportunity Realty", "up")` →
   Basic Capital → American Realty (62%) → Transcontinental (83%) → Income Opportunity (85%).
 - `board_interlock_path("AAPL", "JPM")` → AAPL — JPM *via BELL JAMES A*.
 - `control_chain("AAPL")` → **abstains** (no verified ≥50% control edge) — the honesty machinery
   working as designed.
 
-> **Note on the coalition figure.** This was previously reported as 22 members. The custodial
-> scrub matched the substring `RBC`, which does **not** match `ROYAL BANK OF CANADA` — so RBC,
-> Toronto Dominion, Lazard, City of London and Ohio PERS were being counted as activists.
-> Correcting the name list removed six non-activists. **A precision fix, not a change in the
-> data** — and 16 is the stronger claim, because every remaining name is a real activist or
-> control person.
+> **Note on the coalition figure.** It has moved twice, for two different reasons, and both are
+> worth knowing.
+>
+> **22 → 16 was a precision fix.** The custodial scrub matched the substring `RBC`, which does
+> **not** match `ROYAL BANK OF CANADA` — so RBC, Toronto Dominion, Lazard, City of London and Ohio
+> PERS were counted as activists. Correcting the name list removed six non-activists. That changed
+> no underlying data, and the tighter roster was the stronger claim.
+>
+> **16 → 13 is data-window drift.** The current build is pinned (`--as-of 2026-06-30`, 16 quarters
+> of Form 3/4/5). In that window the Dolan/Maffei Liberty Media sub-cluster no longer connects to
+> Malone — the two Dolans still co-target each other on 4 issuers, but the ≥2-shared-target edge
+> that bridged them into the main component falls outside it, so they form a separate component.
+> Nothing was scrubbed and nothing broke: a connected component's membership is emergent, which is
+> the property that makes this query graph-native in the first place. Both memos under `results/`
+> now carry a provenance line recording the window they were computed from.
 
 ---
 
@@ -160,7 +169,8 @@ for the scripted walkthrough.
   filings are public the moment they land. Treat this as a structural and temporal map, not a
   signal.
 - **Temporal trust is layer-specific.** 13D `filing_date` is real 1994→present history (the
-  "as of" source). `DIRECTOR_OF`/`OFFICER_OF` are a 2023–2026 keep-latest **snapshot**, not a
+  "as of" source). `DIRECTOR_OF`/`OFFICER_OF` are a keep-latest **snapshot** over the staged
+  Form 3/4/5 window (currently 2022q3–2026q2; see the freshness manifest), not a
   time series. 13F `HOLDS` is quarterly with the 2024 coverage step-up excluded below the
   trend threshold — feature the cross-section, not a trend.
 - **Truth-in-inclusion.** Noise is handled by re-ranking / labelling / the custodial-hub scrub,

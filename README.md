@@ -102,8 +102,6 @@ crawling, as a generic non-zero exit from a child script.
 tools, not raw text2cypher: there is no Cypher passthrough and no write path, so the scrubs and
 thresholds that make the answers correct cannot be bypassed.
 
-Requires Neo4j 5.x with GDS. A named database needs Enterprise or Aura; on Community, set
-`NEO4J_DATABASE=neo4j`.
 
 ---
 
@@ -141,7 +139,7 @@ Read these before demoing — they are part of what makes the rest credible.
 - **Activist screens trade recall for precision.** Gated to a curated franchise list; ungated
   detection is dominated by micro-cap founders crossing 5% and by filing-group artifacts (one
   manager filing through seven affiliated vehicles). First-time activists are missed by design.
-- **Only 13D/13G dates are a time series.** Board and officer edges are a 2023–2026 keep-latest
+- **Only 13D/13G dates are a time series.** Board and officer edges are a keep-latest
   snapshot; 13F has a 2024 coverage step-up. Don't read trends into them.
 - **13D/13G history is capped, so "1994→present" holds only for light filers.** The crawl reads
   each issuer's `filings.recent` (~1,000 most recent filings) and takes at most 40 Schedule

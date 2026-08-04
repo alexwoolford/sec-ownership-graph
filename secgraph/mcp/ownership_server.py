@@ -61,8 +61,8 @@ _SECGRAPH_SCHEMA: dict[str, Any] = {
             "percent_of_class, control_class ('control' when >=50%), accession_number, "
             "filing_date. 13D filing_date is real 1994->present history."
         ),
-        "DIRECTOR_OF": "(Insider)->(Company). 2023-2026 keep-latest snapshot (NOT a time series).",
-        "OFFICER_OF": "(Insider)->(Company). 2023-2026 keep-latest snapshot.",
+        "DIRECTOR_OF": "(Insider)->(Company). Keep-latest snapshot over the staged Form 3/4/5 window (NOT a time series).",
+        "OFFICER_OF": "(Insider)->(Company). Keep-latest snapshot over the staged Form 3/4/5 window.",
         "SHARES_DIRECTOR": (
             "(Company)-(Company) derived board-interlock edge (undirected, one per pair). "
             "Props: director_count, via_ciks, source, computed_at."
@@ -89,7 +89,7 @@ _SECGRAPH_SCHEMA: dict[str, Any] = {
     "honest_limits": (
         "CIK-only (understates family structure, conservative). No prediction/alpha claims. "
         "NO market-cap, size or financial data on any company — results cannot be ranked by "
-        "materiality. Board/insider edges are a 2023-2026 keep-latest snapshot; only 13D "
+        "materiality. Board/insider edges are a keep-latest snapshot; only 13D "
         "filing_date is a real time series. Interlock path existence is not informative at "
         "<=4 hops. Activist screens are gated to a curated franchise list: precision over "
         "recall, so unlisted activists are missed by design. No raw Cypher."

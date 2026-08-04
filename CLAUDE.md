@@ -213,7 +213,8 @@ inconclusive and stage more quarters.
   founders crossing 5% and filing-group artifacts (one manager filing through seven affiliated
   vehicles). `distinct_franchises()` collapses on the matched franchise token, not the filer name.
 - **Temporal trust is layer-specific.** Only 13D/13G `filing_date` is a real time series
-  (1994→present). `DIRECTOR_OF`/`OFFICER_OF` are a 2023–2026 keep-latest snapshot; 13F `HOLDS` has a
+  (bounded by the crawl caps below). `DIRECTOR_OF`/`OFFICER_OF` are a keep-latest snapshot over the
+  staged Form 3/4/5 window — which moves with `--quarters-345`; 13F `HOLDS` has a
   2024 coverage step-up. Never imply a trend from those.
 - **MCP stdio and stdout.** `serve_ownership_mcp.py` configures logging to **stderr** directly,
   because the shared `setup_logging` dry-run path writes to stdout and would corrupt the protocol.

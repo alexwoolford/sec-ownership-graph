@@ -23,10 +23,10 @@ defense, or risk arbitrage. Not a quant looking for a signal (see the limits at 
 
 ## Q1 — "What's heating up? Where have multiple activists shown up on the same name recently?"
 
-**Tool:** `activist_convergence(since='2023-01-01')`
+**Tool:** `activist_convergence(since='2022-01-01')`
 
-Returns 8 issuers where two or more recognised activist franchises filed 13D inside a rolling
-180-day window — with the sequence and the day-gap:
+Returns 8 issuers where two or more recognised activist franchises filed 13D within a bounded
+180-day span — with the sequence and the day-gap:
 
 | Issuer | Franchises | Span |
 | --- | --- | --- |
@@ -36,7 +36,7 @@ Returns 8 issuers where two or more recognised activist franchises filed 13D ins
 | **JANX** Janux Therapeutics | RA Capital → OrbiMed | 156 days |
 | **KTF** DWS Municipal Income Trust | Saba → Bulldog | 127 days |
 | **PGZ** Principal Real Estate Income Fund | Saba → Bulldog | 13 days |
-| **HRI** Herc Holdings | Icahn → GAMCO | 3 days |
+| **HRI** Herc Holdings | Icahn → GAMCO | 46 days |
 | **LFCR** Lifecore Biomedical | Legion → Cove Street | 2 days |
 
 **What to point out:** three distinct patterns fall out of one screen — closed-end fund raids
@@ -74,17 +74,24 @@ two filers are actual activists. GAMCO takes a 4% toe-hold; Icahn arrives three 
 
 **Tool:** `activist_coalition("ICAHN CARL C")`
 
-Returns a **16-member coalition, ~5 hops across**, derived from shared 13D targets:
+Returns a **13-member coalition, ~5 hops across**, derived from shared 13D targets:
 
 > Icahn · GAMCO Investors · Gabelli Marc · Bulldog Investors (+LLP) · Goldstein Phillip ·
 > Karpus Management · Saba Capital · Cannell Capital · Royce Charles M · Fund 1 Investments ·
-> Deason Darwin · Dolan Charles F · Dolan James Lawrence · Malone John C · Maffei Gregory B
+> Deason Darwin · Malone John C
 
 **What to point out:** every name is a genuine activist or control person — no banks, no index
 funds, no pensions. That is deliberate: custodians and passive holders are *labelled and excluded
 at query time, not deleted*, because the co-filing fact is true but not evidence of coordination.
-The Dolan/Malone/Maffei sub-cluster is the Liberty Media orbit, which a media-sector person will
-recognise instantly.
+
+> **Note on this figure.** Previously reported as **16**, on a build whose staging window reached
+> further back. In the current pinned build (`--as-of 2026-06-30`, 16 quarters) the Dolan/Maffei
+> Liberty Media sub-cluster no longer connects to Malone: the two Dolans still co-target each
+> other on 4 issuers, but the ≥2-shared-target edge that bridged them into the main component is
+> outside the window, so they form a separate component. **This is data-window drift, not a
+> precision fix and not a defect** — which is exactly why the coalition is a *component* rather
+> than a fixed roster. Expect this number to move with the as-of date; the memo's provenance line
+> records the window it was computed from.
 
 **This is the graph-native question.** The coalition is a *connected component* — its size and
 diameter are emergent, not a fixed join. A warehouse can tell you who co-filed on one name; it
@@ -124,7 +131,7 @@ sits on both boards, which is who you'd actually call.
 - **Recall is deliberately capped.** Activist screens match a curated franchise list. That buys
   precision — the alternative surfaces micro-cap founders crossing 5% and filing-group artifacts
   where one manager files through seven affiliated entities — but a first-time activist is missed.
-- **Only 13D/13G dates are a time series.** Board and officer edges are a 2023–2026 keep-latest
+- **Only 13D/13G dates are a time series.** Board and officer edges are a 2022–2026 keep-latest
   snapshot; 13F has a 2024 coverage step-up. Don't read trends into them.
 - **Control chains are a small-cap tool.** Every verified ≥50% chain in this dataset is
   micro/nano-cap. Useful as a governance screen, not a large-cap feature.
@@ -141,7 +148,7 @@ sits on both boards, which is who you'd actually call.
 > and return the structure you find. And the whole thing rebuilds from SEC source data with one
 > command, so it's a live asset, not a slide."
 
-**Reproduce:** `python scripts/activist_convergence.py --database secgraph --since 2023-01-01
+**Reproduce:** `python scripts/activist_convergence.py --database secgraph --since 2022-01-01
 --timeline MNRO --markdown` → [`results/activist_convergence.md`](../results/activist_convergence.md).
 Full build: `python scripts/build_secgraph.py --database secgraph --execute`. Architecture:
 [`docs/reference_architecture_secgraph.md`](reference_architecture_secgraph.md).
