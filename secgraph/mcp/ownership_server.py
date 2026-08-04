@@ -156,6 +156,46 @@ def create_ownership_mcp_server(
         return _envelope(result, freshness, renderer=CampaignTimelineEngine.format_answer)
 
     @mcp.tool(
+        name="influence_map",
+        annotations=_read_only_annotations,
+    )
+    def influence_map(
+        min_tier: int = 25,
+        min_value_usd: float = 1e9,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        """Issuers where a holder has a big stake AND currently sits on the board.
+
+        The strongest single output here, and the best place to start a governance or
+        counterparty question. It is the two-limb test from 12 CFR 225.2(e) — the Federal
+        Reserve's control presumptions — and its force comes from the **conjunction of two
+        independent filing types**: a Schedule 13D on one side, Form 3/4/5 board activity on the
+        other. A screener can give you either list; the pairing is the finding.
+
+        Requiring a *current* board seat also fixes a freshness problem. 13D carries no exit
+        obligation below 5%, so half the stakes on file predate 2020 and are last-known rather
+        than current — but board activity runs to the present, so a recent seat corroborates an
+        old declaration. Liberty Broadband's 26.1% of Charter was declared in 2014; its director
+        was seen in 2026.
+
+        ``min_tier`` is a presumption tier (10/15/25/50). ``min_value_usd`` filters on the 13F
+        size proxy so results are recognizable names rather than nano-caps.
+
+        Caveat to state if asked: percent_of_class is percent of the class covered by the filing,
+        NOT voting power — and several of the largest names are dual-class (Berkshire, the
+        Liberty complex, Carvana, Sea), where economic and voting stakes diverge.
+
+        Example: influence_map() returns Buffett/Berkshire 37% (seat 2026-05), Liberty
+        Broadband/Charter 26.1% (seat 2026-06), Huffman/Reddit 61.5% (seat 2026-06).
+        """
+        return _envelope(
+            engine.influence_map(
+                min_tier=min_tier, min_value_usd=min_value_usd, limit=limit
+            ),
+            freshness,
+        )
+
+    @mcp.tool(
         name="activist_convergence",
         annotations=_read_only_annotations,
     )

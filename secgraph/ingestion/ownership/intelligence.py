@@ -662,6 +662,98 @@ class OwnershipIntelligenceEngine:
             metadata=meta,
         )
 
+    # -- WIN 4: influence map (stake + board seat) -------------------------- #
+    def influence_map(
+        self,
+        min_tier: int = 25,
+        min_value_usd: float = 1e9,
+        limit: int = 25,
+    ) -> OwnershipIntelligenceResult:
+        """Issuers where a holder has a presumption-tier stake **and** a current board seat.
+
+        The two-limb test from 12 CFR 225.2(e), and the one finding here that needs no hedging:
+        a >=25% holder who also sits on the board is influential by any reading. Its force comes
+        from the **conjunction of two independent filing types** — a Schedule 13D on one side,
+        Form 3/4/5 board activity on the other — which is exactly the join a filings database or a
+        single-table screener cannot do for you.
+
+        It also fixes the freshness problem that makes ``control_chain`` alone unconvincing. Half
+        the 13D population predates 2020 (13D carries no exit obligation below 5%, so a percent is
+        last-known), but the board limb runs to 2026. Requiring a *current* seat means the answer
+        is corroborated by recent activity even when the stake was declared a decade ago —
+        Liberty Broadband's 26.1% of Charter was filed in 2014 and its director was seen in 2026.
+
+        ``min_value_usd`` filters on the 13F size proxy so results are recognizable rather than
+        nano-cap noise; issuers with no institutional coverage are excluded rather than ranked
+        last, because an unranked row cannot honestly claim materiality.
+        """
+        meta = {
+            "strategy_path": "ownership_intelligence",
+            "traversal": "cypher_two_limb_join",
+            "min_tier": min_tier,
+            "min_value_usd": min_value_usd,
+            "legal_basis": "12 CFR 225.2(e) control presumptions (stake tier + board control)",
+        }
+        with self.driver.session(database=self.database) as session:
+            rows = session.run(
+                """
+                MATCH (b:BeneficialOwner)-[r:INFLUENCES]->(c:Company)
+                WHERE r.board_seat AND r.tier >= $min_tier
+                  AND c.institutional_value_usd >= $min_value
+                RETURN c.cik AS company_cik, c.ticker AS ticker,
+                       coalesce(c.name, c.cik) AS company,
+                       c.institutional_value_usd AS institutional_value_usd,
+                       b.cik AS owner_cik, coalesce(b.name, b.cik) AS owner,
+                       r.percent_of_class AS percent_of_class, r.tier AS tier,
+                       r.accession_number AS accession_number,
+                       toString(r.filing_date) AS filing_date,
+                       toString(r.board_seat_last_seen) AS board_seat_last_seen
+                ORDER BY institutional_value_usd DESC, percent_of_class DESC
+                LIMIT $limit
+                """,
+                min_tier=min_tier,
+                min_value=min_value_usd,
+                limit=limit,
+            ).data()
+
+        if not rows:
+            return OwnershipIntelligenceResult(
+                anchor=f"influence >= {min_tier}% with a board seat",
+                task_type="influence_map",
+                abstained=True,
+                result={
+                    "reason": "no_influence_with_board_seat",
+                    "note": (
+                        "No issuer meets both limbs at these thresholds. Requires INFLUENCES "
+                        "edges (materialize_influence_edges.py) and the 13F size proxy."
+                    ),
+                },
+                evidence=[],
+                metadata=meta,
+            )
+
+        # Evidence carries BOTH limbs — the 13D accession and the board-seat date. That pairing
+        # is the claim, so citing only the filing would understate what supports it.
+        evidence = [
+            {
+                "owner": r["owner"],
+                "company": r["company"],
+                "percent_of_class": r["percent_of_class"],
+                "accession_number": r["accession_number"],
+                "filing_date": r["filing_date"],
+                "board_seat_last_seen": r["board_seat_last_seen"],
+            }
+            for r in rows
+        ]
+        return OwnershipIntelligenceResult(
+            anchor=f"influence >= {min_tier}% with a current board seat",
+            task_type="influence_map",
+            abstained=False,
+            result={"cases": rows, "case_count": len(rows)},
+            evidence=evidence,
+            metadata=meta,
+        )
+
     # -- supporting context: ownership snapshot ---------------------------- #
     def ownership_snapshot(self, company: str, top_n: int = 10) -> OwnershipIntelligenceResult:
         """Supporting context for one issuer: top holders, insiders, and control status.
@@ -745,6 +837,32 @@ class OwnershipIntelligenceEngine:
             reason = r.result.get("reason", "no_support")
             note = r.result.get("note", "")
             return f"No graph-grounded answer for '{r.anchor}' ({reason}). {note}".strip()
+
+        if r.task_type == "influence_map":
+            lines = [
+                f"Stake + board seat — {r.result['case_count']} issuers "
+                f"({r.anchor}). Two independent filing types agreeing:",
+                "",
+                f"  {'TICKER':8} {'SIZE':>9}  {'STAKE':>6}  {'13D':6} {'SEAT':8} HOLDER",
+            ]
+            for c in r.result["cases"]:
+                size = (
+                    f"${c['institutional_value_usd'] / 1e9:.1f}B"
+                    if c.get("institutional_value_usd")
+                    else "—"
+                )
+                yr = (c.get("filing_date") or "")[:4]
+                seat = (c.get("board_seat_last_seen") or "")[:7]
+                lines.append(
+                    f"  {c.get('ticker') or c['company_cik']:8} {size:>9}  "
+                    f"{c['percent_of_class']:5.1f}%  {yr:6} {seat:8} {c['owner']}"
+                )
+            lines += [
+                "",
+                "Each row cites a Schedule 13D accession AND a Form 3/4/5 board date;"
+                " see Evidence.",
+            ]
+            return "\n".join(lines)
 
         if r.task_type == "control_chain":
             lines = [

@@ -24,6 +24,7 @@ from secgraph.mcp.ownership_server import (  # noqa: E402
 )
 
 _EXPECTED_TOOLS = {
+    "influence_map",
     "activist_convergence",
     "campaign_timeline",
     "control_chain",
@@ -33,9 +34,10 @@ _EXPECTED_TOOLS = {
     "get_secgraph_schema",
 }
 
-# Tool order shapes which tool an agent reaches for, so the timing questions lead — they are what
-# an event-driven desk asks first. (Not because control_chain is weak: it reaches large caps.)
-_PRIMARY_TOOLS_FIRST = ["activist_convergence", "campaign_timeline"]
+# Tool order shapes which tool an agent reaches for. influence_map leads because it is the
+# strongest single output: a stake AND a current board seat, corroborated by two independent
+# filing types. The timing questions follow — they are what an event-driven desk asks next.
+_PRIMARY_TOOLS_FIRST = ["influence_map", "activist_convergence", "campaign_timeline"]
 
 
 def _tools(server):
@@ -61,7 +63,7 @@ def test_refuses_writable_configuration():
         create_ownership_mcp_server(MagicMock(), read_only=False)
 
 
-def test_timing_tools_are_offered_first():
+def test_primary_tools_are_offered_first():
     server = create_ownership_mcp_server(MagicMock(), read_only=True)
     names = list(_tools(server).keys())
     assert names[: len(_PRIMARY_TOOLS_FIRST)] == _PRIMARY_TOOLS_FIRST
