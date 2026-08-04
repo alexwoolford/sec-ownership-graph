@@ -29,7 +29,7 @@ materialized derived edges — not as a flat `SELECT` plus a client-side Python 
 distinction is load-bearing: a client-side walk is exactly what a warehouse reproduces, so it
 would have made the claim unearned. The Python adjacency walkers retained in
 `graph_native_proof.py` are deliberately the **flat-SQL side** of the head-to-head, and the two
-implementations are cross-checked (they agree: 11 chains / 13-member coalition).
+implementations are cross-checked (they agree: 23 chains / 25-member coalition).
 
 **The claim, stated precisely.** SQL cannot express *a single query* whose traversal depth is
 decided by the data. A warehouse can still reach the same answers via a recursive CTE or
@@ -130,33 +130,42 @@ for the scripted walkthrough.
 
 **Reproducible headline answers** (live against `secgraph`):
 
-- `activist_convergence(since='2022-01-01')` → 8 issuers, incl. **MNRO** (GAMCO → Icahn, 96 days),
+- `activist_convergence(since='2023-01-01')` → 5 issuers, incl. **MNRO** (GAMCO → Icahn, 96 days),
   **SION** (OrbiMed → RA Capital, 5 days), **GDV** (Saba raids a Gabelli fund; GAMCO defends).
-- `campaign_timeline("MNRO")` → GAMCO **4.0%** on 2025-08-01, then **Icahn 14.79%** exactly
+- `campaign_timeline("MNRO")` → GAMCO **5.01%** on 2025-08-01, then **Icahn 14.79%** exactly
   **96 days later**; BlackRock/Dimensional correctly labelled index money, Nomura a custodian.
-- `activist_coalition("ICAHN CARL C")` → the **13-member** scrubbed cluster, ~5 hops
-  (Icahn, GAMCO/Gabelli, Bulldog/Goldstein, Karpus, Saba, Cannell, Royce, Malone).
+- `activist_coalition("ICAHN CARL C")` → the scrubbed cluster: **25 CIKs / 21 distinct actors**,
+  ~5 hops (Icahn, GAMCO/Gabelli, Bulldog, Karpus, Saba, Cannell, Royce, Malone, Glenview,
+  Cascade, the Dolans, B. Riley, …). Both counts are reported: affiliated vehicles of one
+  manager are collapsed for `distinct_actors`, since 3 Bulldog CIKs are 1 firm.
 - `control_chain("Income Opportunity Realty", "up")` →
   Basic Capital → American Realty (62%) → Transcontinental (83%) → Income Opportunity (85%).
 - `board_interlock_path("AAPL", "JPM")` → AAPL — JPM *via BELL JAMES A*.
 - `control_chain("AAPL")` → **abstains** (no verified ≥50% control edge) — the honesty machinery
   working as designed.
 
-> **Note on the coalition figure.** It has moved twice, for two different reasons, and both are
-> worth knowing.
+> **Note on the coalition figure.** It has moved three times, for three different reasons, and
+> conflating them is how a headline number loses credibility.
 >
 > **22 → 16 was a precision fix.** The custodial scrub matched the substring `RBC`, which does
 > **not** match `ROYAL BANK OF CANADA` — so RBC, Toronto Dominion, Lazard, City of London and Ohio
-> PERS were counted as activists. Correcting the name list removed six non-activists. That changed
-> no underlying data, and the tighter roster was the stronger claim.
+> PERS were counted as activists. Correcting the name list removed six non-activists. No
+> underlying data changed.
 >
-> **16 → 13 is data-window drift.** The current build is pinned (`--as-of 2026-06-30`, 16 quarters
-> of Form 3/4/5). In that window the Dolan/Maffei Liberty Media sub-cluster no longer connects to
-> Malone — the two Dolans still co-target each other on 4 issuers, but the ≥2-shared-target edge
-> that bridged them into the main component falls outside it, so they form a separate component.
-> Nothing was scrubbed and nothing broke: a connected component's membership is emergent, which is
-> the property that makes this query graph-native in the first place. Both memos under `results/`
-> now carry a provenance line recording the window they were computed from.
+> **16 → 13 was data-window drift.** Under `--as-of 2026-06-30` the Dolan/Maffei Liberty Media
+> sub-cluster stopped reaching Malone: the ≥2-shared-target edge bridging them fell outside the
+> window.
+>
+> **13 → 25 is coverage.** The crawl now prioritises **original** 13D filings over amendments
+> (EDGAR returns newest-first, so a newest-40 cap was dropping originals entirely). Filers whose
+> originals predate that window became visible for the first time — including the Dolans again.
+> Nothing was scrubbed and nothing broke.
+>
+> Two counts are now reported: **25 CIKs / 21 distinct actors**, the latter collapsing affiliated
+> vehicles (three Bulldog CIKs are one firm; Goldstein is its principal; Digirad renamed to Star
+> Equity). A component's membership is emergent — the property that makes this graph-native also
+> means the count tracks the data window, so both memos under `results/` carry a provenance line.
+
 
 ---
 

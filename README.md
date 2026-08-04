@@ -17,10 +17,10 @@ that does and doesn't support, is in [Honest limits](#honest-limits).
 ```
 $ make demo
 
-Activist convergence — 8 issuers:
+Activist convergence — 5 issuers:
 
   MNRO — MONRO, INC. (2 franchises within 96 days)
-     2025-08-01  GAMCO INVESTORS, INC. ET AL 4.0%
+     2025-08-01  GAMCO INVESTORS, INC. ET AL 5.01%
      2025-11-05  ICAHN CARL C 14.79%
   ...
 
@@ -28,10 +28,10 @@ Ownership timeline — MONRO, INC.:
   2025-01-23  13G           DIMENSIONAL FUND ADVISORS LP (passive_index)
   2025-04-29  13G           BlackRock, Inc. (passive_index)
   2025-05-15  13G           NOMURA HOLDINGS INC (custodian)
-  2025-08-01  13D     4.0%  GAMCO INVESTORS, INC. ET AL (activist)
+  2025-08-01  13D    5.01%  GAMCO INVESTORS, INC. ET AL (activist)
   2025-11-05  13D   14.79%  ICAHN CARL C (activist)
 
-First mover: GAMCO INVESTORS, INC. ET AL on 2025-08-01 at 4.0%
+First mover: GAMCO INVESTORS, INC. ET AL on 2025-08-01 at 5.01%
   → ICAHN CARL C followed 96 days later at 14.79%
 ```
 

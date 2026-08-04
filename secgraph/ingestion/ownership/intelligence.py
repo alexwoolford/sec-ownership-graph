@@ -119,23 +119,36 @@ def coalition_of(components: list[set[str]], anchor_cik: str) -> set[str]:
     return set()
 
 
-# Principals who file both personally and through their firm. A franchise-token match cannot
-# collapse these — "GOLDSTEIN PHILLIP" and "BULLDOG INVESTORS" share no substring — but they are
-# one actor, and counting them separately inflates a coalition roster in front of anyone who
-# knows the names. Deliberately a short, evidenced list of person→firm identities rather than
-# name-similarity guessing, which is the same hard-key discipline the rest of the graph follows.
-_PRINCIPAL_TO_FIRM = {
+# Identities a franchise-token match cannot see, because the two names share no substring.
+# Each is an evidenced one-actor relationship, not a name-similarity guess — the same hard-key
+# discipline the rest of the graph follows:
+#
+#   GOLDSTEIN PHILLIP  -> Bulldog's principal, who also files personally.
+#   DIGIRAD CORP       -> renamed Star Equity Holdings; the two file on shared targets
+#                         (GYRO, SVVC), so they are one filer under two names.
+#
+# Keyed on the UPPERCASED filer name, checked before the franchise tokens so a mapped name wins.
+_AFFILIATE_IDENTITIES = {
     "GOLDSTEIN PHILLIP": "BULLDOG INVESTORS",
+    "DIGIRAD CORP": "STAR EQUITY",
+    "STAR EQUITY FUND, LP": "STAR EQUITY",
 }
 
 
 def _actor_key(name: str) -> str | None:
-    """The distinct-actor key for a filer name, or None when no franchise matches."""
-    upper = str(name or "").upper()
+    """The distinct-actor key for a filer name, or None when no franchise/identity matches.
+
+    Franchise tokens are substrings, so they collapse "Bulldog Investors" /
+    "Bulldog Investors, LLP" / "Bulldog Investors General Partnership" — three CIKs of one firm
+    — onto one key automatically. ``_AFFILIATE_IDENTITIES`` covers the rest.
+    """
+    upper = str(name or "").upper().strip()
+    if upper in _AFFILIATE_IDENTITIES:
+        return _AFFILIATE_IDENTITIES[upper]
     matched = next((f for f in ACTIVIST_FRANCHISES if f in upper), None)
     if matched is None:
         return None
-    return _PRINCIPAL_TO_FIRM.get(matched, matched)
+    return _AFFILIATE_IDENTITIES.get(matched, matched)
 
 
 def collapse_affiliates(names: list[str]) -> list[str]:

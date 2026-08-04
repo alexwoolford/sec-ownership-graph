@@ -3,19 +3,19 @@
   "database": "secgraph",
   "layers": {
     "BENEFICIAL_OWNER_OF": {
-      "count": 53363,
+      "count": 62705,
       "max_filing_date": "2026-06-30"
     },
     "BeneficialOwner": {
-      "count": 15038,
+      "count": 17235,
       "max_filing_date": null
     },
     "CONTROLS": {
-      "count": 882,
+      "count": 1033,
       "max_filing_date": null
     },
     "CO_TARGETS": {
-      "count": 131,
+      "count": 203,
       "max_filing_date": null
     },
     "Company": {
@@ -43,7 +43,7 @@
       "max_filing_date": null
     },
     "SAME_ENTITY_AS": {
-      "count": 68,
+      "count": 89,
       "max_filing_date": null
     },
     "SHARES_DIRECTOR": {

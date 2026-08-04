@@ -23,9 +23,9 @@ defense, or risk arbitrage. Not a quant looking for a signal (see the limits at 
 
 ## Q1 — "What's heating up? Where have multiple activists shown up on the same name recently?"
 
-**Tool:** `activist_convergence(since='2022-01-01')`
+**Tool:** `activist_convergence(since='2023-01-01')`
 
-Returns 8 issuers where two or more recognised activist franchises filed 13D within a bounded
+Returns 5 issuers where two or more recognised activist franchises filed 13D within a bounded
 180-day span — with the sequence and the day-gap:
 
 | Issuer | Franchises | Span |
@@ -36,10 +36,14 @@ Returns 8 issuers where two or more recognised activist franchises filed 13D wit
 | **JANX** Janux Therapeutics | RA Capital → OrbiMed | 156 days |
 | **KTF** DWS Municipal Income Trust | Saba → Bulldog | 127 days |
 | **PGZ** Principal Real Estate Income Fund | Saba → Bulldog | 13 days |
-| **HRI** Herc Holdings | Icahn → GAMCO | 46 days |
-| **LFCR** Lifecore Biomedical | Legion → Cove Street | 2 days |
 
-**What to point out:** three distinct patterns fall out of one screen — closed-end fund raids
+> **Note on the count (was 8).** Three of the previous eight were artifacts of dating an edge by
+> whichever filing was written last rather than the **original**. Herc Holdings showed GAMCO and
+> Icahn "arriving" 46 days apart in 2023 when their real originals are **2016-08-10** and
+> **2014-08-20** — amendments to years-old stakes masquerading as fresh arrivals. Now that edges
+> carry original-filing dates, those drop out correctly. Fewer hits, all of them real.
+
+**What to point out:** distinct patterns fall out of one screen — closed-end fund raids
 (Saba → Bulldog/Karpus), biotech crossover clustering (OrbiMed ↔ RA Capital), and classic
 industrial activism (GAMCO/Icahn). **GDV is Saba attacking a *Gabelli* fund and GAMCO showing up
 to defend it** — that is a story, not a row in a table.
@@ -55,17 +59,17 @@ to defend it** — that is a story, not a row in a table.
 2025-04-29  13G           BlackRock, Inc. (passive_index)
 2025-05-15  13G           NOMURA HOLDINGS INC (custodian)
 2025-05-15  13G           COOPER CREEK PARTNERS MANAGEMENT LLC (other_holder)
-2025-08-01  13D     4.0%  GAMCO INVESTORS, INC. ET AL (activist)
+2025-08-01  13D    5.01%  GAMCO INVESTORS, INC. ET AL (activist)
 2025-11-05  13D   14.79%  ICAHN CARL C (activist)
 2025-11-13  13G           Adage Capital Management, L.P. (passive_index)
 
-First mover: GAMCO INVESTORS, INC. ET AL on 2025-08-01 at 4.0%
+First mover: GAMCO INVESTORS, INC. ET AL on 2025-08-01 at 5.01%
   → ICAHN CARL C followed 96 days later at 14.79%
 ```
 
 **What to point out:** the tool separates *signal from noise inside the same filing type* —
 BlackRock and Dimensional are index money that holds everything, Nomura is a custodian, and only
-two filers are actual activists. GAMCO takes a 4% toe-hold; Icahn arrives three months later at
+two filers are actual activists. GAMCO takes a 5.01% toe-hold; Icahn arrives three months later at
 **14.79%**, nearly 4× the stake. Every line is citable.
 
 ---
@@ -74,24 +78,31 @@ two filers are actual activists. GAMCO takes a 4% toe-hold; Icahn arrives three 
 
 **Tool:** `activist_coalition("ICAHN CARL C")`
 
-Returns a **13-member coalition, ~5 hops across**, derived from shared 13D targets:
+Returns **25 CIKs / 21 distinct actors, ~5 hops across**, derived from shared 13D targets:
 
-> Icahn · GAMCO Investors · Gabelli Marc · Bulldog Investors (+LLP) · Goldstein Phillip ·
-> Karpus Management · Saba Capital · Cannell Capital · Royce Charles M · Fund 1 Investments ·
-> Deason Darwin · Malone John C
+> Icahn · GAMCO Investors · Gabelli Marc · Bulldog Investors · Karpus Management · Saba Capital ·
+> Cannell Capital · Royce Charles M · Fund 1 Investments · Deason Darwin · Malone John C ·
+> Glenview Capital · Cascade Investment · Dolan Charles F · Dolan James Lawrence · B. Riley ·
+> 180 Degree Capital · Star Equity · Albion River · MIRA · Value Catalyst Fund
 
 **What to point out:** every name is a genuine activist or control person — no banks, no index
 funds, no pensions. That is deliberate: custodians and passive holders are *labelled and excluded
 at query time, not deleted*, because the co-filing fact is true but not evidence of coordination.
 
-> **Note on this figure.** Previously reported as **16**, on a build whose staging window reached
-> further back. In the current pinned build (`--as-of 2026-06-30`, 16 quarters) the Dolan/Maffei
-> Liberty Media sub-cluster no longer connects to Malone: the two Dolans still co-target each
-> other on 4 issuers, but the ≥2-shared-target edge that bridged them into the main component is
-> outside the window, so they form a separate component. **This is data-window drift, not a
-> precision fix and not a defect** — which is exactly why the coalition is a *component* rather
-> than a fixed roster. Expect this number to move with the as-of date; the memo's provenance line
-> records the window it was computed from.
+> **Two counts, and why this figure has moved.** `member_count` is 25 CIKs — what the traversal
+> found. `distinct_actors` is 21, collapsing affiliated vehicles of one manager: **three Bulldog
+> CIKs are one firm**, Phillip Goldstein is Bulldog's principal filing personally, and Digirad
+> renamed to Star Equity. Quote 21 to anyone who knows the names; quote 25 only with the
+> filing-group structure explained.
+>
+> The figure has moved twice, for two different reasons — worth separating:
+> **22 → 16 was a precision fix** (the custodial scrub matched substring `RBC` but not
+> `ROYAL BANK OF CANADA`, so banks were being counted as activists).
+> **16 → 25 is coverage**: the crawl now prioritises *original* 13D filings over amendments, so
+> filers whose originals predate the newest-40 window are visible for the first time. No scrub
+> changed. A connected component's membership is emergent — that property is exactly what makes
+> the query graph-native, and it means the number tracks the data window. The memo's provenance
+> line records which window produced it.
 
 **This is the graph-native question.** The coalition is a *connected component* — its size and
 diameter are emergent, not a fixed join. A warehouse can tell you who co-filed on one name; it
@@ -148,7 +159,7 @@ sits on both boards, which is who you'd actually call.
 > and return the structure you find. And the whole thing rebuilds from SEC source data with one
 > command, so it's a live asset, not a slide."
 
-**Reproduce:** `python scripts/activist_convergence.py --database secgraph --since 2022-01-01
+**Reproduce:** `python scripts/activist_convergence.py --database secgraph --since 2023-01-01
 --timeline MNRO --markdown` → [`results/activist_convergence.md`](../results/activist_convergence.md).
 Full build: `python scripts/build_secgraph.py --database secgraph --execute`. Architecture:
 [`docs/reference_architecture_secgraph.md`](reference_architecture_secgraph.md).
