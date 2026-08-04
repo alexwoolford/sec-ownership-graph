@@ -47,6 +47,19 @@ _CIK_RE = re.compile(r"CENTRAL INDEX KEY:\s*(\d+)")
 _NAME_RE = re.compile(r"COMPANY CONFORMED NAME:\s*(.+)")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+# One edge per (owner, company, filing_type) — so a filer's whole 13D history on one issuer
+# collapses into a single edge. What that edge *reports* therefore matters a great deal.
+#
+# It used to overwrite filing_date/accession_number on every MERGE, leaving whichever filing the
+# crawler happened to write last. That manufactured false convergences: Herc Holdings showed
+# GAMCO and Icahn "arriving" 46 days apart in 2022/2023 when both positions actually date to
+# 2016 and 2021 — the printed dates were amendments to years-old stakes. For a demo whose central
+# claim is "who moved first", that is the worst possible field to get wrong.
+#
+# Now: `filing_date` tracks the EARLIEST ORIGINAL (non-/A) filing, which is when the position was
+# actually disclosed, with `accession_number` kept in step so the citation matches the date.
+# `first_seen`/`last_seen` retain the full observed span, and `amendment_count` shows how much
+# history the edge is standing in for. Mirrors the CASE idiom in insiders.py.
 _MERGE_QUERY = """
     UNWIND $batch AS row
     MATCH (c:Company {cik: row.company_cik})
@@ -56,10 +69,39 @@ _MERGE_QUERY = """
         b.cik = row.owner_cik,
         b.resolved = row.resolved
     MERGE (b)-[r:BENEFICIAL_OWNER_OF {filing_type: row.filing_type}]->(c)
+      ON CREATE SET r.loaded_at = datetime()
     SET r.source = 'sec_13dg',
-        r.filing_date = date(row.filing_date),
-        r.accession_number = row.accession_number,
-        r.loaded_at = datetime()
+        r.first_seen = CASE
+              WHEN r.first_seen IS NULL OR date(row.filing_date) < r.first_seen
+              THEN date(row.filing_date) ELSE r.first_seen END,
+        r.last_seen = CASE
+              WHEN r.last_seen IS NULL OR date(row.filing_date) > r.last_seen
+              THEN date(row.filing_date) ELSE r.last_seen END,
+        r.amendment_count = coalesce(r.amendment_count, 0)
+              + CASE WHEN row.is_amendment THEN 1 ELSE 0 END,
+        // Originals win outright over amendments; among originals, the earliest wins. An
+        // amendment only sets the date when no original has been seen for this pair at all.
+        r.filing_is_original = CASE
+              WHEN NOT row.is_amendment THEN true
+              ELSE coalesce(r.filing_is_original, false) END,
+        r.accession_number = CASE
+              WHEN r.accession_number IS NULL THEN row.accession_number
+              WHEN NOT row.is_amendment AND NOT coalesce(r.filing_is_original, false)
+                   THEN row.accession_number
+              WHEN NOT row.is_amendment AND date(row.filing_date) < r.filing_date
+                   THEN row.accession_number
+              WHEN coalesce(r.filing_is_original, false) THEN r.accession_number
+              WHEN date(row.filing_date) < r.filing_date THEN row.accession_number
+              ELSE r.accession_number END,
+        r.filing_date = CASE
+              WHEN r.filing_date IS NULL THEN date(row.filing_date)
+              WHEN NOT row.is_amendment AND NOT coalesce(r.filing_is_original, false)
+                   THEN date(row.filing_date)
+              WHEN NOT row.is_amendment AND date(row.filing_date) < r.filing_date
+                   THEN date(row.filing_date)
+              WHEN coalesce(r.filing_is_original, false) THEN r.filing_date
+              WHEN date(row.filing_date) < r.filing_date THEN date(row.filing_date)
+              ELSE r.filing_date END
     RETURN count(r) AS n
 """
 
@@ -112,6 +154,21 @@ def parse_header(header: str) -> dict[str, str] | None:
 def _classify_filing(form_type: str) -> str:
     """Normalize a submission type to '13D' or '13G' (amendments collapse)."""
     return "13D" if "13D" in form_type.upper() else "13G"
+
+
+def is_amendment(form_type: str) -> bool:
+    """True for a ``/A`` amendment rather than an original filing.
+
+    Load-bearing in two places, and previously thrown away by :func:`_classify_filing`:
+
+    - **Percent validation.** An original 13D cannot report below 5% (Section 13(d) is
+      triggered by crossing 5%), so a sub-5% figure there is a parse error. A 13D/A *can* —
+      it is how an exit is reported. Half of the sub-5% figures in the graph were legitimate
+      amendment exits, so blanket-rejecting them would have destroyed real data.
+    - **First-mover dates.** "Who moved first" must anchor on an original. Amendments to a
+      position held for years otherwise masquerade as fresh arrivals.
+    """
+    return form_type.upper().rstrip().endswith("/A")
 
 
 def filings_as_of(filings: list[dict], as_of: str | None) -> list[dict]:
@@ -185,6 +242,8 @@ def _crawl_subject(
                 "resolved": resolved,
                 "company_cik": parsed["subject_cik"],
                 "filing_type": _classify_filing(parsed["form_type"]),
+                "form_type": parsed["form_type"],
+                "is_amendment": is_amendment(parsed["form_type"]),
                 "filing_date": parsed["filing_date"] or filing["date"],
                 "accession_number": filing["accession"],
             }

@@ -1,7 +1,7 @@
 # Public Company Graph — Schema Reference
 
 > **Auto-generated** from `schema/graph_schema.yaml`.
-> Last generated: 2026-08-03 04:43 UTC
+> Last generated: 2026-08-04 11:26 UTC
 >
 > Do **not** edit this file by hand. Run:
 > ```bash
@@ -97,7 +97,8 @@ SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-sl
 | `CONTROLS` | `(BeneficialOwner)-[:CONTROLS]->(Company)` | Verified >=50% control of the issuer (derived from BENEFICIAL_OWNER_OF 13D edges where control_class='control'; self-filings excluded). Materialized so the transitive control chain is a real variable-depth Cypher traversal rather than a client-side walk; chains continue where a controlled Company's CIK also exists as a BeneficialOwner. |
 | `SAME_ENTITY_AS` | `(Company)-[:SAME_ENTITY_AS]->(BeneficialOwner)` | The Company and the BeneficialOwner are the same legal entity, matched on identical CIK (a hard key, never a name match). Purely structural: it lets a control chain continue past an intermediate holding company that both IS controlled and DOES control, so (root)-[:CONTROLS|SAME_ENTITY_AS*]->(target) traverses the full pyramid in Cypher. Carries no ownership semantics of its own. |
 | `CO_TARGETS` | `(BeneficialOwner)-[:CO_TARGETS]->(BeneficialOwner)` | Two 13D filers co-target >=2 of the same issuers (derived activist co-targeting edge, stored undirected once with a.cik<b.cik). Substrate for the wolf-pack coalition component; custodial/broker hubs are labelled is_custodial on the node and excluded at projection time rather than deleted. |
-| `BENEFICIAL_OWNER_OF` | `(BeneficialOwner)-[:BENEFICIAL_OWNER_OF]->(Company)` | >5% beneficial owner of the issuer (SEC Schedule 13D/13G) |
+| `BENEFICIAL_OWNER_OF` | `(BeneficialOwner)-[:BENEFICIAL_OWNER_OF]->(Company)` | >5% beneficial owner of the issuer (SEC Schedule 13D/13G). ONE edge per (owner, company, filing_type), so a filer's whole 13D history on an issuer collapses here. filing_date/accession_number therefore report the EARLIEST ORIGINAL (non-/A) filing — when the position was actually disclosed — while first_seen/last_seen keep the full observed span and amendment_count shows how much history the edge stands in for. Reporting the last-written filing instead manufactured false convergences (amendments to years-old stakes looked like fresh arrivals).
+ |
 | `HOLDS` | `(InstitutionalManager)-[:HOLDS]->(Company)` | 13F reported holding of the issuer by an institutional manager, keyed by report_period so each quarter is a distinct edge (a position time series, not a latest-only snapshot). Slice/compare quarter-over-quarter on report_period to see accumulation/trimming.
  |
 
@@ -157,7 +158,7 @@ SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-sl
 `(BeneficialOwner)-[:BENEFICIAL_OWNER_OF]->(Company)`
 
 - **Required:** `filing_type`, `filing_date`, `source`, `loaded_at`
-- **Optional:** `percent_of_class`, `accession_number`, `control_class`, `sole_voting`, `shared_voting`, `pct_verified`, `control_extracted_at`
+- **Optional:** `percent_of_class`, `accession_number`, `control_class`, `sole_voting`, `shared_voting`, `pct_verified`, `pct_source`, `control_extracted_at`, `first_seen`, `last_seen`, `amendment_count`, `filing_is_original`
 
 #### HOLDS
 

@@ -134,13 +134,23 @@ relationships:
 
   BENEFICIAL_OWNER_OF:
     pattern: "(BeneficialOwner)-[:BENEFICIAL_OWNER_OF]->(Company)"
-    description: ">5% beneficial owner of the issuer (SEC Schedule 13D/13G)"
+    description: >
+      >5% beneficial owner of the issuer (SEC Schedule 13D/13G). ONE edge per
+      (owner, company, filing_type), so a filer's whole 13D history on an issuer collapses
+      here. filing_date/accession_number therefore report the EARLIEST ORIGINAL (non-/A)
+      filing — when the position was actually disclosed — while first_seen/last_seen keep the
+      full observed span and amendment_count shows how much history the edge stands in for.
+      Reporting the last-written filing instead manufactured false convergences (amendments to
+      years-old stakes looked like fresh arrivals).
     source: BeneficialOwner
     target: Company
     required_properties: [filing_type, filing_date, source, loaded_at]
-    # percent_of_class + the control_* / *_voting / pct_verified props are written by
+    # percent_of_class + the control_* / *_voting / pct_* props are written by
     # control_extraction.py onto the >=5% ownership edge (control_class='control' when the
     # verified stake is >=50% — the substrate for the transitive control-chain win).
+    # pct_source records WHICH rule produced the percent (aggregate_prose / row13 / prose /
+    # llm / rejected_below_13d_threshold), because presence-verification alone could not tell
+    # a filing group's total from one affiliated vehicle's row.
     optional_properties:
       [
         percent_of_class,
@@ -149,7 +159,12 @@ relationships:
         sole_voting,
         shared_voting,
         pct_verified,
+        pct_source,
         control_extracted_at,
+        first_seen,
+        last_seen,
+        amendment_count,
+        filing_is_original,
       ]
 
   HOLDS:
