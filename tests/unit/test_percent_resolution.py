@@ -55,6 +55,16 @@ _EXIT_AMENDMENT = (
 )
 
 
+# A per-vehicle table with a "Totals" row instead of a prose aggregate — faithful reduction of
+# accession 0000950123-11-009374 (American Realty -> Transcontinental Realty).
+_TOTALS_TABLE_FILING = (
+    "SCHEDULE 13D Item 5. Interest in Securities of the Issuer. The Shares owned beneficially "
+    "by the Reporting Persons set forth below: No. of Shares Name Owned Beneficially "
+    "Approximate % Class ARL* 6,721,999 82.85 % EQK* 5,521,999 68.06 % "
+    "TCI AcqSub 1,200,000 14.79 % Totals 6,721,999 82.85 %"
+)
+
+
 class TestParseAggregatePercent:
     def test_finds_the_group_aggregate(self):
         assert parse_aggregate_percent(_GROUP_FILING) == 5.01
@@ -87,6 +97,9 @@ class TestParsePercentDeterministic:
         assert pct == 5.01
         assert source == "aggregate_prose"
 
+    def test_reads_a_totals_row_table(self):
+        assert parse_aggregate_percent(_TOTALS_TABLE_FILING) == 82.85
+
     def test_falls_back_to_row13_for_a_single_filer(self):
         pct, source = parse_percent_deterministic(_SINGLE_FILING)
         assert pct == 12.7
@@ -100,8 +113,26 @@ class TestResolvePercent:
     def test_sub5_on_original_13d_is_corrected_to_the_aggregate(self):
         assert resolve_percent(4.04, _GROUP_FILING, filing_type="13D", is_amendment=False) == (
             5.01,
-            "aggregate_prose",
+            "aggregate_total",
         )
+
+    def test_aggregate_outranks_a_per_vehicle_row_even_above_5pct(self):
+        """The 5% rule cannot catch this class of error, and it deleted a real control link.
+
+        A filing printed a per-vehicle table whose last row was a subsidiary at 14.79% against
+        an 82.85% group total. 14.79 is above 5%, so the threshold test never fired — the graph
+        silently lost a verified >=50% control edge and, with it, its deepest control chain.
+        """
+        pct, source = resolve_percent(
+            14.79, _TOTALS_TABLE_FILING, filing_type="13D", is_amendment=False
+        )
+        assert pct == 82.85
+        assert source == "aggregate_total"
+
+    def test_a_correctly_read_total_is_never_revised_downward(self):
+        """Only *raise* to the aggregate — never lower a figure that already matches it."""
+        pct, _ = resolve_percent(82.85, _TOTALS_TABLE_FILING, filing_type="13D", is_amendment=False)
+        assert pct == 82.85
 
     def test_sub5_on_an_amendment_is_left_alone(self):
         """A 13D/A can legitimately report an exit below 5% — half the sub-5% figures in the
@@ -144,7 +175,7 @@ class TestBuildEdgeResult:
             is_amendment=False,
         )
         assert r["percent_of_class"] == 5.01
-        assert r["pct_source"] == "aggregate_prose"
+        assert r["pct_source"] == "aggregate_total"
         assert r["pct_verified"] is True
         assert r["control_class"] == "stake"  # 5.01% is a stake, not control
 

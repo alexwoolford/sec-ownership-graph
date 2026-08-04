@@ -53,7 +53,8 @@ _EXPORT_QUERY = """
            b.owner_key      AS owner_key,
            r.percent_of_class AS percent_of_class,
            r.control_class  AS control_class,
-           coalesce(r.pct_verified, false) AS pct_verified
+           coalesce(r.pct_verified, false) AS pct_verified,
+           r.pct_source     AS pct_source
     ORDER BY company_cik, accession_number, owner_key
 """
 

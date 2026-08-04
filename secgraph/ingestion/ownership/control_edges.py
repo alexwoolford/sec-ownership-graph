@@ -52,6 +52,9 @@ CONTROL_FIGURE_COLUMNS = (
     "percent_of_class",
     "control_class",
     "pct_verified",
+    # Which rule produced the percent. Carried through the CSV so a cloner's rebuild keeps the
+    # provenance rather than getting a bare number with no way to audit it.
+    "pct_source",
 )
 
 # Apply committed figures onto the 13D ownership edge, keyed on (company, accession). This is
@@ -65,6 +68,7 @@ _APPLY_FIGURES_QUERY = """
     SET r.percent_of_class = row.percent_of_class,
         r.control_class = row.control_class,
         r.pct_verified = row.pct_verified,
+        r.pct_source = row.pct_source,
         r.control_extracted_at = datetime(),
         r.control_source = 'reference_csv'
     RETURN count(r) AS n
@@ -213,6 +217,7 @@ def parse_control_figures(path: Path) -> list[dict[str, Any]]:
                     "control_class": control_class,
                     "pct_verified": str(raw["pct_verified"]).strip().lower()
                     in {"true", "1", "yes"},
+                    "pct_source": (raw.get("pct_source") or "").strip() or None,
                 }
             )
     return rows

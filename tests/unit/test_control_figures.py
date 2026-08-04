@@ -39,6 +39,7 @@ class TestParseControlFigures:
             "percent_of_class": 56.4,  # float, not str
             "control_class": "control",
             "pct_verified": True,  # bool, not str
+            "pct_source": None,  # absent in this fixture's header
         }
         assert rows[1]["percent_of_class"] == 7.1
         assert rows[1]["pct_verified"] is False

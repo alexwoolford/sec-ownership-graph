@@ -103,6 +103,19 @@ _AGGREGATE_PCT_RE = re.compile(
     re.I,
 )
 
+# The GROUP TOTALS ROW — the other way filings state an aggregate. Instead of prose, some
+# filings print a per-vehicle table ending in a "Totals" line:
+#
+#   Name Owned Beneficially Approximate % Class
+#   ARL* 6,721,999 82.85 %   EQK* 5,521,999 68.06 %   TCI AcqSub 1,200,000 14.79 %
+#   Totals 6,721,999 82.85 %
+#
+# The extractor read 14.79% here (the last subsidiary row) and silently dropped a verified
+# 82.85% control link, deleting the deepest control chain in the graph. Caught by re-checking
+# the chain count after the sub-5% fix, not by the sub-5% rule — 14.79% is above 5%, so the
+# threshold test cannot see this class of error at all.
+_TOTALS_PCT_RE = re.compile(r"\btotals?\b[^%]{0,80}?([0-9]{1,3}(?:\.[0-9]+)?)\s*%", re.I)
+
 # Minimum percent-of-class that can appear on an *original* Schedule 13D. Section 13(d)
 # reporting is triggered by crossing 5%, so a lower figure on an original filing is a parse
 # error, not a fact. Amendments are exempt: a 13D/A legitimately reports an exit below 5%.
@@ -138,14 +151,20 @@ def cover_window(text: str, chars: int = _COVER_WINDOW_CHARS) -> str:
 
 
 def parse_aggregate_percent(text: str) -> float | None:
-    """The group-aggregate percent, when the filing states one in prose.
+    """The group-aggregate percent, when the filing states one.
 
     Authoritative for a filing group: several affiliated vehicles each carry their own row-13
-    percent, and none of them is the group total. Returns None when no aggregate sentence is
-    present (the common single-filer case, where row 13 *is* the answer).
+    percent, and none of them is the group total. Two forms are recognised — the prose
+    "aggregate ... representing N%" sentence, and a per-vehicle table's "Totals" row. Returns
+    None when neither is present (the common single-filer case, where row 13 *is* the answer).
     """
-    m = _AGGREGATE_PCT_RE.search(text)
-    return _coerce_pct(m.group(1)) if m else None
+    for pattern in (_AGGREGATE_PCT_RE, _TOTALS_PCT_RE):
+        m = pattern.search(text)
+        if m:
+            pct = _coerce_pct(m.group(1))
+            if pct is not None:
+                return pct
+    return None
 
 
 def parse_percent_deterministic(text: str) -> tuple[float | None, str | None]:
@@ -229,11 +248,17 @@ def resolve_percent(
     if pct is None or not verify_percent(pct, text):
         return None, None
 
+    # A stated group aggregate outranks any per-vehicle row, regardless of magnitude. The 5%
+    # threshold test alone was not enough: one filing's subsidiary row read 14.79% against an
+    # 82.85% group total — above 5%, so invisible to the threshold, yet it silently deleted a
+    # verified control link. Only *raise* to the aggregate; a candidate already at or above it
+    # is left alone, so a correctly-read total is never revised downward.
+    aggregate = parse_aggregate_percent(text)
+    if aggregate is not None and aggregate > pct:
+        return aggregate, "aggregate_total"
+
     original_13d = filing_type.upper().startswith("13D") and not is_amendment
     if original_13d and pct < _MIN_ORIGINAL_13D_PCT:
-        aggregate = parse_aggregate_percent(text)
-        if aggregate is not None and aggregate >= _MIN_ORIGINAL_13D_PCT:
-            return aggregate, "aggregate_prose"
         return None, "rejected_below_13d_threshold"
 
     return pct, source or "llm"
