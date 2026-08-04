@@ -438,6 +438,43 @@ class TestBeneficialHeader:
         assert "some-person-group" in by_owner  # name-slug fallback
         assert by_owner["some-person-group"]["resolved"] is False
 
+    # --- original-filing prioritisation --------------------------------------------------- #
+    # EDGAR returns newest-first, so a newest-N cap fills with /A amendments on a
+    # heavily-amended subject and drops the originals. Herc Holdings has 54 13D-family filings
+    # of which only 3 are originals (2014, 2014, 2016) — all outside a newest-40 window. The
+    # first-mover date then reported an amendment to a years-old stake as a fresh arrival.
+
+    def test_prioritize_originals_keeps_all_originals(self):
+        filings = [
+            {"accession": f"a{i}", "form": "SC 13D/A", "date": f"2025-01-{i:02d}"}
+            for i in range(1, 21)
+        ] + [
+            {"accession": "orig-2016", "form": "SC 13D", "date": "2016-08-10"},
+            {"accession": "orig-2014", "form": "SC 13D", "date": "2014-08-20"},
+        ]
+        kept = beneficial.prioritize_originals(filings, 5)
+        accs = [f["accession"] for f in kept]
+        assert accs[:2] == ["orig-2014", "orig-2016"], "originals first, oldest first"
+        assert len(kept) == 5, "budget still respected"
+
+    def test_prioritize_originals_fills_remainder_with_amendments(self):
+        """Recent activity must still be visible once originals are secured."""
+        filings = [
+            {"accession": "orig", "form": "SC 13D", "date": "2016-08-10"},
+            {"accession": "amd1", "form": "SC 13D/A", "date": "2025-01-01"},
+            {"accession": "amd2", "form": "SC 13D/A", "date": "2025-02-01"},
+        ]
+        kept = beneficial.prioritize_originals(filings, 3)
+        assert [f["accession"] for f in kept] == ["orig", "amd1", "amd2"]
+
+    def test_prioritize_originals_handles_no_originals(self):
+        filings = [{"accession": "amd", "form": "SC 13D/A", "date": "2025-01-01"}]
+        assert beneficial.prioritize_originals(filings, 5) == filings
+
+    def test_prioritize_originals_zero_limit(self):
+        filings = [{"accession": "orig", "form": "SC 13D", "date": "2016-08-10"}]
+        assert beneficial.prioritize_originals(filings, 0) == []
+
     # --- as-of pinning of the 13D/G crawl ------------------------------------------------- #
 
     def test_filings_as_of_filters_by_date(self):

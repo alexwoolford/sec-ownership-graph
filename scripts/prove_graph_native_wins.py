@@ -58,7 +58,12 @@ def render_console(result: dict) -> None:
         f"{ch['hinges']} hinges → {ch['multi_hop_chains']} multi-hop chains "
         f"(deepest {ch['deepest_hops']} hops)"
     )
-    print(f"  SQL gets: {ch['sql_gets']}")
+    print(f"  flat SQL: {ch['sql_flat_gets']}")
+    print(
+        f"  recursive CTE: {ch['sql_recursive_chains']} paths >=2 hops, deepest "
+        f"{ch['sql_recursive_deepest']} ({ch['sql_elapsed_ms']} ms) — "
+        f"{'AGREES' if ch['sql_agrees'] else 'DIVERGES'} with the graph"
+    )
     for chain in ch["top_chains"]:
         steps = " -> ".join(
             f"{s['name']}({s['pct']:.0f}%)" if s["pct"] else s["name"] for s in chain
@@ -69,7 +74,9 @@ def render_console(result: dict) -> None:
     print("\n" + "=" * 72)
     print("WIN 2 — PATH: board interlock shortestPath vs SQL (GROUP BY)")
     print("=" * 72)
-    print(f"  SQL gets: {pa['sql_gets']}")
+    print(f"  flat SQL: {pa['sql_flat_gets']}")
+    for sp in pa.get("sql_paths", []):
+        print(f"    recursive BFS {sp['a']}->{sp['z']}: {sp['hops']} hops ({sp['elapsed_ms']} ms)")
     for c in pa["chains"]:
         if c["chain"]:
             print(f"    {c['a']} ~~> {c['z']}: " + " -- ".join(str(x) for x in c["chain"]))
@@ -87,7 +94,11 @@ def render_console(result: dict) -> None:
         f"{co['largest_raw']} · after custodial scrub {co['largest_scrubbed']} "
         f"activists, ~{co['largest_diameter']} hops diameter"
     )
-    print(f"  SQL gets: {co['sql_gets']}")
+    print(f"  flat SQL: {co['sql_flat_gets']}")
+    print(
+        f"  recursive CTE: largest component {co['sql_recursive_members']} "
+        f"({co['sql_elapsed_ms']} ms) — {'AGREES' if co['sql_agrees'] else 'DIVERGES'}"
+    )
     print("  largest coalition members: " + ", ".join(co["largest_members"]))
     print()
 
@@ -119,7 +130,12 @@ def render_markdown(result: dict, generated: str) -> str:
         f"- Graph engine: `{ch['graph_engine']}` "
         f"(cross-check vs the flat-SQL-equivalent Python walk: "
         f"{'agrees' if ch.get('matches_python_baseline') else 'DIVERGES'}).",
-        f"- **SQL gets:** {ch['sql_gets']} — it cannot walk the chain.",
+        f"- **Flat SQL:** {ch['sql_flat_gets']}.",
+        f"- **Recursive CTE (`WITH RECURSIVE`):** {ch['sql_recursive_chains']} paths at >=2 hops, "
+        f"deepest {ch['sql_recursive_deepest']}, in {ch['sql_elapsed_ms']} ms — "
+        f"**{'agrees with the graph' if ch['sql_agrees'] else 'DIVERGES'}**. A warehouse can "
+        "reach this answer; the graph's advantage is one declarative pattern per question "
+        "rather than a hand-built recursion each time.",
         "- *Scope, stated plainly: these chains are dominated by micro/nano-cap issuers. Read this"
         " as a **small-cap governance and credit screen** — where control is concentrated and"
         " minority holders are exposed — not as a large-cap tool. Large caps have no >=50% holder,"
@@ -135,7 +151,14 @@ def render_markdown(result: dict, generated: str) -> str:
         "",
         "## Win 2 — PATH: board-interlock shortestPath",
         "",
-        f"- **SQL gets:** {pa['sql_gets']}.",
+        f"- **Flat SQL:** {pa['sql_flat_gets']}.",
+        "- **Recursive BFS:** "
+        + "; ".join(
+            f"`{sp['a']}`→`{sp['z']}` {sp['hops']} hops ({sp['elapsed_ms']} ms)"
+            for sp in pa.get("sql_paths", [])
+        )
+        + ". Same paths as the graph, at higher cost — frontier expansion rather than "
+        "bidirectional search, and it needs an explicit hop cap to stay bounded.",
         "- *Read the bridging director, not the path. Well-connected pairs are linked within a"
         ' handful of hops, so "are these two boards connected?" is effectively always yes and'
         " carries no information. What is informative is **who** the named connector is, and"
@@ -168,7 +191,10 @@ def render_markdown(result: dict, generated: str) -> str:
         f"- Graph engine: `{co['graph_engine']}` "
         f"(cross-check vs the flat-SQL-equivalent Python walk: "
         f"{'agrees' if co.get('matches_python_baseline') else 'DIVERGES'}).",
-        f"- **SQL gets:** {co['sql_gets']}.",
+        f"- **Flat SQL:** {co['sql_flat_gets']}.",
+        f"- **Recursive CTE:** largest component {co['sql_recursive_members']} members in "
+        f"{co['sql_elapsed_ms']} ms — "
+        f"**{'agrees with the graph' if co['sql_agrees'] else 'DIVERGES'}**.",
         f"- Largest coalition members: {', '.join(co['largest_members'])}.",
         "",
         "## The rule",

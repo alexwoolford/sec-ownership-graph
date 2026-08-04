@@ -198,6 +198,27 @@ def filings_as_of(filings: list[dict], as_of: str | None) -> list[dict]:
     return kept
 
 
+def prioritize_originals(filings: list[dict], limit: int) -> list[dict]:
+    """Take ``limit`` filings, preferring ORIGINALS over amendments.
+
+    The cap exists to bound crawl cost, but taking the newest N is the wrong slice for the
+    demo's central claim. EDGAR returns newest-first, so on a heavily-amended subject the
+    window fills with ``/A`` filings and the originals fall off the end: Herc Holdings has 54
+    13D-family filings of which only 3 are originals (2014, 2014, 2016), all outside a
+    newest-40 window. The first-mover date then reported an amendment to a years-old position
+    as a fresh arrival — a manufactured convergence.
+
+    Originals first (oldest first, since the earliest is the disclosure that matters), then
+    the newest amendments to fill the remaining budget so recent activity is still visible.
+    """
+    if limit <= 0:
+        return []
+    originals = [f for f in filings if not is_amendment(f.get("form", ""))]
+    amendments = [f for f in filings if is_amendment(f.get("form", ""))]
+    originals.sort(key=lambda f: f.get("date") or "")
+    return (originals + amendments)[:limit]
+
+
 def _crawl_subject(
     subject_cik: str,
     cache_dir: Path,
@@ -221,7 +242,7 @@ def _crawl_subject(
     filings = fetch_13dg_accessions(subject_cik, cache_dir, refresh=refresh_index)
     filings = filings_as_of(filings, as_of)
     rows: list[dict] = []
-    for filing in filings[:max_filings_per_subject]:
+    for filing in prioritize_originals(filings, max_filings_per_subject):
         header = fetch_submission_header(
             subject_cik, filing["accession"], cache_dir, refresh=refresh_headers
         )

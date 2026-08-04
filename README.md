@@ -48,7 +48,7 @@ index money and the custodian **inside the same filing type**, and it puts them 
 Three questions need a relationship followed to a depth the data decides — one declarative Cypher
 pattern, executed next to the data:
 
-| Question | Cypher | Why not SQL |
+| Question | Cypher | Why a traversal |
 | --- | --- | --- |
 | Who ultimately controls this issuer? | `(root)-[:CONTROLS\|SAME_ENTITY_AS*1..N]->(target)` | chain depth is unknown up front |
 | Who operates as a coalition with X? | `(seed)-[:CO_TARGETS*0..N]-(m)` | the component is emergent, not a fixed join |
@@ -56,11 +56,13 @@ pattern, executed next to the data:
 
 Stated precisely, because overclaiming here loses technical audiences: **SQL cannot express a
 single query whose traversal depth is decided by the data.** A warehouse can still reach the same
-answers with a recursive CTE or by looping in application code. The advantage is one indexed
-declarative pattern next to the data — not that the answer is unobtainable elsewhere.
+answers with a recursive CTE. The advantage is one indexed declarative pattern next to the data —
+not that the answer is unobtainable elsewhere.
 
-`scripts/prove_graph_native_wins.py` runs the graph traversal and the flat-SQL equivalent
-side by side and cross-checks that they agree (`make prove`).
+`make prove` runs both legs for real — Cypher inside Neo4j, and genuine `WITH RECURSIVE` CTEs over
+identical rows — and **publishes the agreement, with timings for both**. At this scale SQL is
+*faster* on the chain (~0.7 ms vs ~13 ms) and slower on the path (~20 ms vs ~1 ms). Anyone
+evaluating this should read those numbers before the prose.
 
 ---
 
@@ -146,6 +148,12 @@ Read these before demoing — they are part of what makes the rest credible.
   13D/G per subject. For a company that files hundreds of Form 4s a year, `recent` may reach back
   only a year or two, and its older 13D/Gs are invisible. Small caps — where the control chains
   are — get the full history; mega caps do not.
+- **At this scale, a warehouse is a real alternative.** The three wins run on ~1,100 derived
+  edges, measured depth is overwhelmingly 1-2 hops with a maximum of 3, and a recursive CTE
+  answers all three in single-digit milliseconds. The honest case for a graph here is authoring
+  cost per *new* question, GDS algorithms with no SQL equivalent (Louvain, betweenness), and the
+  curated serving layer — **not** tractability. Tractability would only become the argument at a
+  far larger universe than 8,000 tickered issuers.
 - **Rebuilds drift, by construction.** The staging window resolves against the run date, and
   EDGAR keeps accruing filings, so a rebuild today will not reproduce the figures below exactly.
   New 13Ds can also *remove* a convergence hit, because the screen measures a total span rather

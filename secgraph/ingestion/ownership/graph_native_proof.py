@@ -7,26 +7,32 @@ traversal, and the flat-SQL equivalent a warehouse would use — so the contrast
 plateaus at the fixed hop; the graph completes the variable-depth object") is shown, not
 asserted. Emits ``results/graph_native_proof.md``.
 
-The bar every win here has already cleared: beat vector/semantic retrieval, beat
-SQL/warehouse, be valuable. The discriminating leg is SQL — **only variable-depth traversal
-beats a warehouse**; a fixed-hop self-join (stake+seat overlap, shared-holder set, dated
-13G→13D flip) does not, so those are honestly labelled SQL-class and deliberately excluded
-here rather than padded into the pitch.
+**What this proof does and does not claim.** Both legs are run for real: the graph leg as
+Cypher inside Neo4j, the SQL leg as genuine ``WITH RECURSIVE`` CTEs over identical rows in
+SQLite (supported by Postgres, Snowflake and BigQuery alike). **They agree, and the agreement
+is the point** — an earlier version's "SQL side" was two ``SELECT COUNT(*)`` calls, which is a
+straw man a competent engineer spots immediately and which was never load-bearing anyway.
+
+At this data's scale (~1k derived edges across the three wins) a recursive CTE answers all
+three in single-digit milliseconds, so the honest claim is **authoring cost per new question**
+— one declarative pattern versus a hand-built recursion each time — plus GDS algorithms with
+no SQL equivalent, and the curated serving layer. Not tractability. Tractability would only
+become the argument at a much larger universe than 8,000 tickered issuers.
 
 The three wins:
 
 - **CHAIN** — transitive control. 13D edges carry a verified ``percent_of_class``
   (:mod:`.control_extraction`); chaining the ``control`` (>=50%) edges through CIK "hinges"
-  yields ultimate-parent → subsidiary → sub-subsidiary chains. SQL reproduces one hop
-  (``WHERE control_class='control'``); it cannot walk the variable-depth chain.
+  yields ultimate-parent → subsidiary → sub-subsidiary chains. *Flat* SQL reproduces one hop;
+  a recursive CTE reproduces the whole chain and is run here for comparison.
 - **PATH** — board interlocks. ``shortestPath`` between two boards over the persisted
   ``SHARES_DIRECTOR`` edge (:mod:`.interlock_edges`, the two interlock scrubs baked in at
-  materialize time). SQL reproduces "who sits on >=2 boards" (a ``GROUP BY``); it cannot
-  express reachability between two named companies at unknown depth.
+  materialize time). *Flat* SQL reproduces "who sits on >=2 boards" (a ``GROUP BY``); a
+  recursive BFS reproduces the path, at higher cost than bidirectional shortestPath.
 - **COALITION** — activist wolf-packs. Connected-component / diameter over the co-targeting
-  graph (activists linked by >=2 shared 13D targets). SQL reproduces the *pairs* (a
-  self-join); it cannot assemble the transitive coalition or measure its diameter. Survives
-  the custodial-hub precision scrub (the pillar-1 discipline).
+  graph (activists linked by >=2 shared 13D targets). *Flat* SQL reproduces the *pairs* (a
+  self-join); a ``UNION`` recursive CTE assembles the same component. Survives the
+  custodial-hub precision scrub (the pillar-1 discipline).
 
 READ-ONLY. No writes anywhere; a pure in-memory SQLite mirror is built for the SQL leg so
 the comparison runs against the same rows the graph traversal sees.
@@ -36,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from collections import defaultdict, deque
 from typing import Any
 
@@ -269,6 +276,27 @@ def _fetch_control_edges(session) -> list[dict[str, Any]]:
     ).data()
 
 
+def _fetch_same_entity_bridges(session) -> list[dict[str, Any]]:
+    """The CIK-identity bridges the control chain traverses (for the SQL mirror)."""
+    return session.run(
+        """
+        MATCH (c:Company)-[:SAME_ENTITY_AS]->(b:BeneficialOwner)
+        RETURN c.cik AS company_cik, b.cik AS owner_cik
+        """
+    ).data()
+
+
+def _fetch_interlock_edges(session) -> list[dict[str, Any]]:
+    """The board-interlock edges (for the SQL mirror's BFS leg)."""
+    return session.run(
+        """
+        MATCH (a:Company)-[:SHARES_DIRECTOR]->(b:Company)
+        WHERE a.cik IS NOT NULL AND b.cik IS NOT NULL
+        RETURN a.cik AS a_cik, b.cik AS b_cik
+        """
+    ).data()
+
+
 def _fetch_cotarget_pairs(session, min_shared: int) -> list[dict[str, Any]]:
     """Activist co-targeting pairs (>=``min_shared`` shared 13D targets) with names."""
     return session.run(
@@ -371,8 +399,18 @@ def _cypher_largest_coalition(session) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # SQL leg — an in-memory mirror so the comparison uses identical rows.
 # --------------------------------------------------------------------------- #
-def _build_sqlite_mirror(control_edges: list[dict[str, Any]], pairs: list[dict[str, Any]]):
-    """In-memory SQLite of the same rows, for the flat-SQL comparison leg."""
+def _build_sqlite_mirror(
+    control_edges: list[dict[str, Any]],
+    pairs: list[dict[str, Any]],
+    bridges: list[dict[str, Any]] | None = None,
+    interlocks: list[dict[str, Any]] | None = None,
+):
+    """In-memory SQLite of the same rows, for the SQL comparison leg.
+
+    Mirrors *every* edge set the graph leg traverses, so the SQL side can attempt all three
+    wins. ``same_entity`` and ``shares_director`` were previously absent, which meant the
+    board-interlock leg had no SQL implementation at all — its "SQL gets…" string was hardcoded.
+    """
     con = sqlite3.connect(":memory:")
     con.execute(
         "CREATE TABLE control_edge (owner_cik TEXT, owner_name TEXT, "
@@ -390,18 +428,137 @@ def _build_sqlite_mirror(control_edges: list[dict[str, Any]], pairs: list[dict[s
         "INSERT INTO cotarget VALUES (?,?,?)",
         [(p["a_cik"], p["b_cik"], p["shared"]) for p in pairs],
     )
+    # The CIK-identity bridge — without it the recursive chain stops at one hop, exactly as the
+    # Cypher pattern does without SAME_ENTITY_AS.
+    con.execute("CREATE TABLE same_entity (company_cik TEXT, owner_cik TEXT)")
+    con.executemany(
+        "INSERT INTO same_entity VALUES (?,?)",
+        [(b["company_cik"], b["owner_cik"]) for b in (bridges or [])],
+    )
+    con.execute("CREATE TABLE shares_director (a_cik TEXT, b_cik TEXT)")
+    con.executemany(
+        "INSERT INTO shares_director VALUES (?,?)",
+        [(i["a_cik"], i["b_cik"]) for i in (interlocks or [])],
+    )
+    for ddl in (
+        "CREATE INDEX ix_ce_owner ON control_edge(owner_cik)",
+        "CREATE INDEX ix_se_company ON same_entity(company_cik)",
+        "CREATE INDEX ix_ct_a ON cotarget(a_cik)",
+        "CREATE INDEX ix_ct_b ON cotarget(b_cik)",
+        "CREATE INDEX ix_sd_a ON shares_director(a_cik)",
+        "CREATE INDEX ix_sd_b ON shares_director(b_cik)",
+    ):
+        con.execute(ddl)
     con.commit()
     return con
 
 
 def _sql_control_one_hop(con) -> int:
-    """What flat SQL gets on the CHAIN win: single-hop control edges. No transitivity."""
+    """Single-hop control edges — the *flat* (non-recursive) SQL baseline.
+
+    Retained only as the "one JOIN and stop" reference point. It is NOT the honest SQL
+    comparison; see :func:`sql_control_chains`, which uses a recursive CTE and agrees with the
+    graph exactly.
+    """
     return con.execute("SELECT COUNT(*) FROM control_edge").fetchone()[0]
 
 
 def _sql_cotarget_pairs(con) -> int:
-    """What flat SQL gets on the COALITION win: the pairs. Not the transitive coalition."""
+    """Co-targeting pairs — the flat baseline. See :func:`sql_largest_coalition`."""
     return con.execute("SELECT COUNT(*) FROM cotarget").fetchone()[0]
+
+
+# --------------------------------------------------------------------------- #
+# The HONEST SQL leg: recursive CTEs.
+# --------------------------------------------------------------------------- #
+# Postgres, Snowflake, BigQuery and SQLite all support WITH RECURSIVE, so a competent data
+# engineer reproduces every one of these answers in a warehouse. Publishing a comparison whose
+# "SQL side" was `SELECT COUNT(*)` would be a straw man — and the first thing a hostile
+# engineer greps for. These queries agree with the Cypher exactly; the asserted advantage is
+# authoring cost and latency per *new* question, not capability.
+
+_SQL_CONTROL_CHAINS = """
+WITH RECURSIVE chain(root, cur_company, path, hops) AS (
+    SELECT owner_cik, company_cik, owner_cik || '>' || company_cik, 1 FROM control_edge
+  UNION ALL
+    SELECT ch.root, c.company_cik, ch.path || '>' || c.company_cik, ch.hops + 1
+    FROM chain ch
+    JOIN same_entity se ON se.company_cik = ch.cur_company
+    JOIN control_edge c ON c.owner_cik = se.owner_cik
+    -- Cycle guard: the analogue of Cypher's relationship-uniqueness. Postgres would use
+    -- `NOT (c.company_cik = ANY(path))` over a real array.
+    WHERE instr(ch.path, c.company_cik) = 0
+)
+SELECT hops, COUNT(*) AS n FROM chain GROUP BY hops ORDER BY hops
+"""
+
+_SQL_COALITION = """
+WITH RECURSIVE reach(seed, node) AS (
+    SELECT a_cik, a_cik FROM cotarget
+  UNION SELECT b_cik, b_cik FROM cotarget
+  UNION
+    -- UNION (not UNION ALL) dedupes and terminates for free on a cyclic graph.
+    SELECT r.seed, e.other
+    FROM reach r
+    JOIN (SELECT a_cik AS one, b_cik AS other FROM cotarget
+          UNION ALL SELECT b_cik AS one, a_cik AS other FROM cotarget) e
+      ON e.one = r.node
+)
+SELECT seed, COUNT(DISTINCT node) AS members FROM reach GROUP BY seed
+ORDER BY members DESC, seed LIMIT 1
+"""
+
+_SQL_SHORTEST_PATH = """
+WITH RECURSIVE bfs(node, path, hops) AS (
+    SELECT :start, :start, 0
+  UNION ALL
+    SELECT e.b, bfs.path || '>' || e.b, bfs.hops + 1
+    FROM bfs
+    JOIN (SELECT a_cik AS a, b_cik AS b FROM shares_director
+          UNION ALL SELECT b_cik AS a, a_cik AS b FROM shares_director) e
+      ON e.a = bfs.node
+    -- The hop cap is load-bearing: unbounded frontier expansion blows up on the giant
+    -- component. This is genuine BFS, not the bidirectional search Neo4j's shortestPath uses.
+    WHERE bfs.hops < :max_hops AND instr(bfs.path, e.b) = 0
+)
+SELECT hops FROM bfs WHERE node = :target ORDER BY hops LIMIT 1
+"""
+
+
+def sql_control_chains(con, min_hops: int = 2) -> dict[str, Any]:
+    """Control-chain hop distribution via recursive CTE. Returns counts + elapsed ms."""
+    start = time.perf_counter()
+    rows = con.execute(_SQL_CONTROL_CHAINS).fetchall()
+    elapsed = (time.perf_counter() - start) * 1000
+    dist = {int(h): int(n) for h, n in rows}
+    return {
+        "hop_distribution": dist,
+        "multi_hop_paths": sum(n for h, n in dist.items() if h >= min_hops),
+        "deepest_hops": max(dist) if dist else 0,
+        "elapsed_ms": round(elapsed, 2),
+    }
+
+
+def sql_largest_coalition(con) -> dict[str, Any]:
+    """Largest co-targeting component via recursive CTE. Returns size + elapsed ms."""
+    start = time.perf_counter()
+    row = con.execute(_SQL_COALITION).fetchone()
+    elapsed = (time.perf_counter() - start) * 1000
+    return {
+        "largest_members": int(row[1]) if row else 0,
+        "elapsed_ms": round(elapsed, 2),
+    }
+
+
+def sql_shortest_path(con, start_cik: str, target_cik: str, max_hops: int = 6) -> dict[str, Any]:
+    """Board-interlock shortest path via recursive BFS. Returns hops (None) + elapsed ms."""
+    started = time.perf_counter()
+    row = con.execute(
+        _SQL_SHORTEST_PATH,
+        {"start": start_cik, "target": target_cik, "max_hops": max_hops},
+    ).fetchone()
+    elapsed = (time.perf_counter() - started) * 1000
+    return {"hops": int(row[0]) if row else None, "elapsed_ms": round(elapsed, 2)}
 
 
 # --------------------------------------------------------------------------- #
@@ -437,6 +594,17 @@ def prove_graph_native_wins(
         # The graph leg: traversal executed by Neo4j.
         cypher_chains = _cypher_control_chains(session)
         cypher_coalition = _cypher_largest_coalition(session)
+        # Extra edge sets + a ticker→CIK map so the SQL leg can attempt all three wins.
+        bridges = _fetch_same_entity_bridges(session)
+        interlock_edges = _fetch_interlock_edges(session)
+        wanted = sorted({t for pair in interlock_pairs for t in pair})
+        ticker_ciks = {
+            r["ticker"]: r["cik"]
+            for r in session.run(
+                "MATCH (c:Company) WHERE c.ticker IN $t RETURN c.ticker AS ticker, c.cik AS cik",
+                t=wanted,
+            ).data()
+        }
 
     # CHAIN — Python walk retained as the flat-SQL-equivalent baseline (see docstring).
     adjacency = build_control_adjacency(control_edges)
@@ -463,10 +631,30 @@ def prove_graph_native_wins(
     largest = comps_scrubbed[0] if comps_scrubbed else set()
     diameter = component_diameter(largest, pair_tuples)
 
-    # SQL leg
-    con = _build_sqlite_mirror(control_edges, cotarget)
+    # SQL leg — the flat baselines AND the honest recursive-CTE implementations.
+    # Scrub custodial hubs from the SQL mirror too: _cypher_largest_coalition excludes
+    # is_custodial nodes at projection time, so mirroring the RAW pairs would compare the
+    # graph's scrubbed 13 against SQL's unscrubbed 22 and report a spurious DIVERGES.
+    scrubbed_pairs = [
+        p
+        for p in cotarget
+        if not is_custodial_hub(p.get("a_name")) and not is_custodial_hub(p.get("b_name"))
+    ]
+    con = _build_sqlite_mirror(control_edges, scrubbed_pairs, bridges, interlock_edges)
     sql_control = _sql_control_one_hop(con)
     sql_pairs = _sql_cotarget_pairs(con)
+    sql_chains = sql_control_chains(con)
+    sql_coalition = sql_largest_coalition(con)
+    sql_paths = [
+        {
+            "a": pair["a"],
+            "z": pair["z"],
+            **sql_shortest_path(
+                con, ticker_ciks.get(pair["a"], ""), ticker_ciks.get(pair["z"], ""), max_hops
+            ),
+        }
+        for pair in interlocks
+    ]
     con.close()
 
     result = {
@@ -483,7 +671,16 @@ def prove_graph_native_wins(
             # is the evidence that Cypher-ifying preserved the result rather than changing it.
             "python_baseline_chains": len(chains),
             "matches_python_baseline": len(cypher_chains) == len(chains),
-            "sql_gets": f"{sql_control} single-hop control edges (no transitivity)",
+            # BOTH SQL legs are reported. The flat one is the "one JOIN and stop" baseline;
+            # the recursive CTE is what a competent data engineer actually writes, and it
+            # AGREES with the graph. Publishing the agreement is stronger than a rigged win.
+            "sql_flat_gets": f"{sql_control} single-hop control edges (one JOIN, no recursion)",
+            "sql_recursive_chains": sql_chains["multi_hop_paths"],
+            "sql_recursive_deepest": sql_chains["deepest_hops"],
+            "sql_hop_distribution": sql_chains["hop_distribution"],
+            "sql_elapsed_ms": sql_chains["elapsed_ms"],
+            "sql_agrees": sql_chains["deepest_hops"]
+            == max((c["hops"] for c in cypher_chains), default=0),
             "top_chains": [
                 [
                     {"cik": None, "name": name, "pct": ([None] + list(c["pcts"]))[i]}
@@ -494,7 +691,15 @@ def prove_graph_native_wins(
         },
         "path": {
             "pairs_traced": len(interlocks),
-            "sql_gets": "who sits on >=2 boards (a GROUP BY) — not reachability between A and Z",
+            # Previously a hardcoded string: no SQL ran at all, because the mirror had no
+            # shares_director table. Now a real recursive BFS over the same edges.
+            "sql_flat_gets": "who sits on >=2 boards (a GROUP BY), not reachability A→Z",
+            "sql_paths": sql_paths,
+            "sql_agrees": all(
+                sp["hops"] == len(g["chain"]) - 1
+                for sp, g in zip(sql_paths, interlocks, strict=False)
+                if g.get("chain") and sp.get("hops") is not None
+            ),
             "chains": interlocks,
         },
         "coalition": {
@@ -509,7 +714,10 @@ def prove_graph_native_wins(
             "graph_engine": "cypher variable-depth reachability over CO_TARGETS",
             "python_baseline_largest": len(largest),
             "matches_python_baseline": cypher_coalition["member_count"] == len(largest),
-            "sql_gets": f"{sql_pairs} co-targeting pairs (a self-join) — not the coalition",
+            "sql_flat_gets": f"{sql_pairs} co-targeting pairs (a self-join), not the component",
+            "sql_recursive_members": sql_coalition["largest_members"],
+            "sql_elapsed_ms": sql_coalition["elapsed_ms"],
+            "sql_agrees": sql_coalition["largest_members"] == cypher_coalition["member_count"],
         },
     }
     log.info(
