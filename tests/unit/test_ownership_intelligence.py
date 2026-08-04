@@ -233,3 +233,45 @@ class TestFormatAnswer:
         assert "VANGUARD GROUP INC" in msg
         assert "7.2%" in msg
         assert "control edge: no" in msg
+
+
+class TestCollapseAffiliates:
+    """One manager files through several CIKs; a roster of CIKs is not a roster of actors.
+
+    The Icahn coalition returns 13 CIKs but 11 distinct actors: "Bulldog Investors" and
+    "Bulldog Investors, LLP" are two CIKs of one firm, and Phillip Goldstein is that firm's
+    principal filing personally. Quoting 13 to someone who knows the names invites the
+    objection immediately.
+    """
+
+    def test_collapses_name_variants_of_one_firm(self):
+        from secgraph.ingestion.ownership.intelligence import collapse_affiliates
+
+        kept = collapse_affiliates(["Bulldog Investors", "Bulldog Investors, LLP"])
+        assert kept == ["Bulldog Investors"]
+
+    def test_collapses_a_principal_into_their_firm(self):
+        """A franchise-token match cannot see this: the two names share no substring."""
+        from secgraph.ingestion.ownership.intelligence import collapse_affiliates
+
+        kept = collapse_affiliates(["Bulldog Investors", "GOLDSTEIN PHILLIP"])
+        assert kept == ["Bulldog Investors"]
+
+    def test_keeps_genuinely_distinct_filers(self):
+        """GAMCO and Marc Gabelli have separate 13D histories — a family tie is not one actor."""
+        from secgraph.ingestion.ownership.intelligence import collapse_affiliates
+
+        kept = collapse_affiliates(["GAMCO INVESTORS, INC. ET AL", "GABELLI MARC"])
+        assert len(kept) == 2
+
+    def test_passes_through_unknown_names(self):
+        """Dropping a non-franchise filer would understate the coalition."""
+        from secgraph.ingestion.ownership.intelligence import collapse_affiliates
+
+        kept = collapse_affiliates(["ICAHN CARL C", "Some Unlisted Fund LP"])
+        assert kept == ["ICAHN CARL C", "Some Unlisted Fund LP"]
+
+    def test_empty_input(self):
+        from secgraph.ingestion.ownership.intelligence import collapse_affiliates
+
+        assert collapse_affiliates([]) == []

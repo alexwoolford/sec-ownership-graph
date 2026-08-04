@@ -42,6 +42,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
+from secgraph.ingestion.ownership.campaign_timeline import ACTIVIST_FRANCHISES
 from secgraph.ingestion.ownership.graph_native_proof import is_custodial_hub
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,54 @@ def coalition_of(components: list[set[str]], anchor_cik: str) -> set[str]:
         if anchor_cik in comp:
             return comp
     return set()
+
+
+# Principals who file both personally and through their firm. A franchise-token match cannot
+# collapse these — "GOLDSTEIN PHILLIP" and "BULLDOG INVESTORS" share no substring — but they are
+# one actor, and counting them separately inflates a coalition roster in front of anyone who
+# knows the names. Deliberately a short, evidenced list of person→firm identities rather than
+# name-similarity guessing, which is the same hard-key discipline the rest of the graph follows.
+_PRINCIPAL_TO_FIRM = {
+    "GOLDSTEIN PHILLIP": "BULLDOG INVESTORS",
+}
+
+
+def _actor_key(name: str) -> str | None:
+    """The distinct-actor key for a filer name, or None when no franchise matches."""
+    upper = str(name or "").upper()
+    matched = next((f for f in ACTIVIST_FRANCHISES if f in upper), None)
+    if matched is None:
+        return None
+    return _PRINCIPAL_TO_FIRM.get(matched, matched)
+
+
+def collapse_affiliates(names: list[str]) -> list[str]:
+    """Collapse affiliated filers to one entry per distinct actor.
+
+    A coalition roster counts CIKs, but one manager frequently files through several: "Bulldog
+    Investors" and "Bulldog Investors, LLP" are two CIKs, and Phillip Goldstein is Bulldog's
+    principal — three rows for one actor. Presenting 13 CIKs as 13 *actors* overstates the
+    coalition, and the first person who knows the names will say so.
+
+    Collapses on the franchise token (as ``distinct_franchises`` does for the convergence
+    screen), plus the ``_PRINCIPAL_TO_FIRM`` identities that a token match cannot see. Names
+    matching no known franchise pass through — they may be genuine one-off filers, and dropping
+    them would understate the coalition instead.
+
+    Note what is deliberately *not* collapsed: GAMCO and Marc Gabelli are separate filers with
+    separate 13D histories, so they stay distinct despite the family relationship.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        key = _actor_key(name)
+        if key is None:
+            out.append(name)
+            continue
+        if key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
 
 
 def chains_from_paths(
@@ -530,7 +579,18 @@ class OwnershipIntelligenceEngine:
             abstained=False,
             result={
                 "members": sorted(m["name"] or m["cik"] for m in members),
+                # Both counts are reported. `member_count` is CIKs (what the traversal found);
+                # `distinct_actors` collapses affiliated vehicles of one manager, which is the
+                # number to quote to someone who knows the names. Reporting only the larger
+                # figure overstates the coalition; reporting only the smaller hides the
+                # filing-group structure, which is itself informative.
                 "member_count": len(members),
+                "distinct_actors": len(
+                    collapse_affiliates(sorted(m["name"] or m["cik"] for m in members))
+                ),
+                "distinct_actor_names": collapse_affiliates(
+                    sorted(m["name"] or m["cik"] for m in members)
+                ),
                 "diameter_hops": diameter,
             },
             evidence=evidence,
