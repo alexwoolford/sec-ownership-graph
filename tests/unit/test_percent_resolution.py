@@ -161,6 +161,22 @@ class TestResolvePercent:
         pct, _ = resolve_percent(4.2, text, filing_type="13G", is_amendment=False)
         assert pct == 4.2
 
+    def test_a_still_impossible_aggregate_is_rejected(self):
+        """The threshold check must run on whatever value WINS, including a substituted one.
+
+        Checking it before the aggregate substitution let three impossible figures through: the
+        aggregate regex matched a cover-page row label ("Check if the Aggregate Amount in Row
+        (11)...") rather than a real totals line, raised the value, and bypassed the gate.
+        """
+        text = (
+            "SCHEDULE 13D 11. Aggregate Amount Beneficially Owned by Each Reporting Person "
+            "1,112,110 12. Check if the Aggregate Amount in Row (11) Excludes Certain Shares "
+            "13. Percent of Class 3.4%"
+        )
+        pct, source = resolve_percent(3.4, text, filing_type="13D", is_amendment=False)
+        assert pct is None
+        assert source == "rejected_below_13d_threshold"
+
     def test_none_input_is_none_output(self):
         assert resolve_percent(None, _GROUP_FILING) == (None, None)
 

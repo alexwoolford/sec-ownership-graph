@@ -29,7 +29,7 @@ materialized derived edges — not as a flat `SELECT` plus a client-side Python 
 distinction is load-bearing: a client-side walk is exactly what a warehouse reproduces, so it
 would have made the claim unearned. The Python adjacency walkers retained in
 `graph_native_proof.py` are deliberately the **flat-SQL side** of the head-to-head, and the two
-implementations are cross-checked (they agree: 23 chains / 25-member coalition).
+implementations are cross-checked (they agree: 22 chains / 25-member coalition).
 
 **The claim, stated precisely.** SQL cannot express *a single query* whose traversal depth is
 decided by the data. A warehouse can still reach the same answers via a recursive CTE or

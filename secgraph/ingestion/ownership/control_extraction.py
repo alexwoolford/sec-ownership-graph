@@ -114,7 +114,11 @@ _AGGREGATE_PCT_RE = re.compile(
 # 82.85% control link, deleting the deepest control chain in the graph. Caught by re-checking
 # the chain count after the sub-5% fix, not by the sub-5% rule — 14.79% is above 5%, so the
 # threshold test cannot see this class of error at all.
-_TOTALS_PCT_RE = re.compile(r"\btotals?\b[^%]{0,80}?([0-9]{1,3}(?:\.[0-9]+)?)\s*%", re.I)
+# `\btotals?\b` alone was too loose: cover-page row 12 reads "Check if the Aggregate Amount in
+# Row (11) Excludes Certain Shares", and "Totals" also appears in unrelated tables, so the
+# pattern skated forward to whatever percent came next. Require the number within ~40 chars and
+# forbid an intervening digit-comma run (a share count), which keeps it on a real totals line.
+_TOTALS_PCT_RE = re.compile(r"\btotals?\b[^%\n]{0,40}?([0-9]{1,3}(?:\.[0-9]+)?)\s*%", re.I)
 
 # Minimum percent-of-class that can appear on an *original* Schedule 13D. Section 13(d)
 # reporting is triggered by crossing 5%, so a lower figure on an original filing is a parse
@@ -254,14 +258,19 @@ def resolve_percent(
     # verified control link. Only *raise* to the aggregate; a candidate already at or above it
     # is left alone, so a correctly-read total is never revised downward.
     aggregate = parse_aggregate_percent(text)
-    if aggregate is not None and aggregate > pct:
-        return aggregate, "aggregate_total"
+    final, final_source = (
+        (aggregate, "aggregate_total") if aggregate is not None and aggregate > pct else (pct, None)
+    )
 
+    # The threshold check runs LAST, on whatever value won — including a substituted aggregate.
+    # Checking it before the substitution let three impossible figures through: the aggregate
+    # regex matched a cover-page row label rather than a real totals line, raised the value, and
+    # then bypassed the gate entirely. An aggregate that is still impossible is still wrong.
     original_13d = filing_type.upper().startswith("13D") and not is_amendment
-    if original_13d and pct < _MIN_ORIGINAL_13D_PCT:
+    if original_13d and final < _MIN_ORIGINAL_13D_PCT:
         return None, "rejected_below_13d_threshold"
 
-    return pct, source or "llm"
+    return final, final_source or source or "llm"
 
 
 def classify_control(pct: float | None, threshold: float = CONTROL_THRESHOLD_PCT) -> str:
