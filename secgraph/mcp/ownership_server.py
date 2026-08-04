@@ -79,17 +79,20 @@ _SECGRAPH_SCHEMA: dict[str, Any] = {
         "activist_coalition — PRIMARY: the custodial-scrubbed co-targeting coalition around a "
         "named activist, with its diameter",
         "ownership_snapshot — SUPPORTING: top holders / insiders / control status for an issuer",
-        "control_chain — SUPPORTING: transitive >=50% control chains. Note the verified chains "
-        "in this dataset are micro/nano-cap issuers, so treat this as a small-cap governance "
-        "screen rather than a large-cap tool",
+        "control_chain — PRIMARY: transitive >=50% control chains. Works on large caps: 27 of "
+        "825 controlled issuers carry >=$10B of institutional ownership (Deutsche Telekom holds "
+        "74.3% of T-Mobile US; GE held 62.6% of Baker Hughes). Only the MULTI-HOP pyramids are "
+        "small-cap. Results carry institutional_value_usd so they can be ranked by size",
         "board_interlock_path — SUPPORTING: shortest board-interlock path. The *existence* of a "
         "path is near-universal (every well-connected pair links within 4 hops), so the "
         "informative output is the NAMED BRIDGING DIRECTOR, not whether a path exists",
     ],
     "honest_limits": (
         "CIK-only (understates family structure, conservative). No prediction/alpha claims. "
-        "NO market-cap, size or financial data on any company — results cannot be ranked by "
-        "materiality. Board/insider edges are a keep-latest snapshot; only 13D "
+        "Size is a PROXY only: institutional_value_usd sums one quarter of 13F holdings, so it "
+        "measures free float (understating concentrated-ownership issuers), is null for ~25% of "
+        "companies with no institutional coverage, and includes ETFs. No revenue, assets or true "
+        "market cap. Board/insider edges are a keep-latest snapshot; only 13D "
         "filing_date is a real time series. Interlock path existence is not informative at "
         "<=4 hops. Activist screens are gated to a curated franchise list: precision over "
         "recall, so unlisted activists are missed by design. No raw Cypher."
@@ -218,11 +221,17 @@ def create_ownership_mcp_server(
         citation. Abstains (abstained=True) when the issuer has no verified control edge —
         never fabricates a chain from sub-50% or unclassified stakes.
 
-        **Scope caveat:** the verified control chains in this dataset are all micro/nano-cap
-        issuers, so treat this as a small-cap governance/credit screen rather than a large-cap
-        tool. Large caps have no >=50% holder and correctly abstain.
+        **Scope, precisely.** Single-hop control reaches large caps: 27 of 825 controlled
+        issuers carry >=$10B of institutional ownership and 105 carry >=$1B. It is the
+        MULTI-HOP pyramids that are small-cap — those top out around $1.5B — so treat chain
+        *depth* as a small-cap governance signal while single-hop control is general-purpose.
+        Most large caps still have no >=50% holder and correctly abstain.
 
-        Example: control_chain("Income Opportunity Realty", "up") returns
+        Each step carries institutional_value_usd (a 13F size proxy, null for the ~25% of
+        issuers with no institutional coverage) so results can be ranked by materiality.
+
+        Examples: control_chain("TMUS") returns Deutsche Telekom -> T-Mobile US (74.3%, $95B).
+        control_chain("Income Opportunity Realty") returns the 3-hop pyramid
         Basic Capital -> American Realty (62%) -> Transcontinental (83%) -> Income Opportunity (85%).
         """
         return _envelope(

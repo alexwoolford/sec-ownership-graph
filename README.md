@@ -136,8 +136,12 @@ Read these before demoing — they are part of what makes the rest credible.
 
 - **No prediction.** The alpha question was tested and came back null. Efficient markets; 13Ds are
   public. This is a structural and temporal map, not a signal.
-- **No materiality data.** No market cap, size or financials on any issuer, so results cannot be
-  ranked by "does this matter." Bring your own universe filter. *Largest known gap.*
+- **Size is a proxy, not a market cap.** `Company.institutional_value_usd` sums one quarter of
+  13F holdings so results *can* be ranked by materiality — but it measures **free float** (so it
+  understates concentrated-ownership issuers, conservatively), is **null for ~25% of the universe**
+  (no institutional coverage — which is itself a signal, not a zero), and counts ETFs. There is
+  still no revenue, assets or true market cap. Bring your own universe filter for anything
+  fundamental.
 - **Activist screens trade recall for precision.** Gated to a curated franchise list; ungated
   detection is dominated by micro-cap founders crossing 5% and by filing-group artifacts (one
   manager filing through seven affiliated vehicles). First-time activists are missed by design.
@@ -159,8 +163,11 @@ Read these before demoing — they are part of what makes the rest credible.
   New 13Ds can also *remove* a convergence hit, because the screen measures a total span rather
   than a rolling window. Compare against `results/secgraph_freshness.json` (`as_of`) before
   concluding something broke.
-- **Control chains are a small-cap instrument.** Every verified ≥50% chain in this dataset is a
-  micro/nano-cap issuer. A real governance screen; not a large-cap feature.
+- **Chain *depth* is a small-cap signal; single-hop control is not.** 27 of 825 controlled issuers
+  carry ≥$10B of institutional ownership — Deutsche Telekom holds 74.3% of T-Mobile US, GE held
+  62.6% of Baker Hughes. But the **multi-hop** pyramids top out near $1.5B, so read a deep chain as
+  a small-cap governance screen and a single-hop one as general-purpose. Most large caps have no
+  ≥50% holder at all and correctly abstain.
 - **Board-interlock path *existence* is uninformative.** Measured: every well-connected pair links
   within 4 hops. The named bridging director is the signal, not the connection.
 - **CIK-keyed only.** Deliberately conservative — understates family/affiliate structure rather

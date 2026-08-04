@@ -137,15 +137,17 @@ sits on both boards, which is who you'd actually call.
 
 - **It does not predict anything.** We backtested the alpha question and it came back null.
   Efficient markets; 13Ds are public. This is a structural and temporal map, not a signal.
-- **No materiality ranking.** The graph carries no market-cap or size data, so a nano-cap and a
-  large cap look identical in output. A user has to bring their own universe filter.
+- **Size is a proxy.** Results are ranked by `institutional_value_usd` (one quarter of 13F
+  holdings), which measures free float, is null for ~25% of issuers, and includes ETFs. No
+  revenue, assets or true market cap — bring your own filter for anything fundamental.
 - **Recall is deliberately capped.** Activist screens match a curated franchise list. That buys
   precision — the alternative surfaces micro-cap founders crossing 5% and filing-group artifacts
   where one manager files through seven affiliated entities — but a first-time activist is missed.
 - **Only 13D/13G dates are a time series.** Board and officer edges are a 2022–2026 keep-latest
   snapshot; 13F has a 2024 coverage step-up. Don't read trends into them.
-- **Control chains are a small-cap tool.** Every verified ≥50% chain in this dataset is
-  micro/nano-cap. Useful as a governance screen, not a large-cap feature.
+- **Deep chains are a small-cap tool; single-hop control is not.** 27 of 825 controlled issuers
+  carry ≥$10B (Deutsche Telekom → T-Mobile at 74.3%), but the multi-hop pyramids top out near
+  $1.5B. Read depth as the small-cap governance signal.
 - **CIK-keyed only.** Deliberately conservative: it understates family/affiliate structure rather
   than inventing links through fuzzy name matching.
 

@@ -187,13 +187,24 @@ for the scripted walkthrough.
   and excluded *at projection time*, so the co-filing fact survives in the graph.
 - **No raw Cypher over the served surface.** Curated tools only — safer and more reliable in a
   POC than a text2cypher passthrough.
-- **No materiality data.** `Company` nodes carry `cik / ticker / name / sector / sic_code /
-  state_of_incorp` — and **no market cap, size or financials** on any of the 8,046 issuers. Nothing
-  can be ranked by "does this matter"; the user must bring their own universe filter. *This is the
-  largest remaining gap for a finance audience.*
-- **Control chains are a small-cap instrument.** Every verified ≥50% chain in this dataset is a
-  micro/nano-cap issuer (only Embraer is a widely-recognised name). Genuine as a governance and
-  minority-holder-risk screen; not a large-cap feature.
+- **Size is a proxy; fundamentals are still absent.** `Company.institutional_value_usd` sums one
+  quarter of 13F holdings (`materialize_materiality.py`), so results *can* now be ranked by
+  materiality — which is what surfaced the large-cap control relationships the earlier docs said
+  did not exist. Three limits travel with the figure: it measures **free float** (understating
+  concentrated-ownership issuers — conservative, never a false positive), it is **null for ~25% of
+  the universe** with no institutional coverage (absence is a signal, not a zero), and ETFs are in
+  the universe so SPY/QQQ rank high on other people's money. There is still **no revenue, assets or
+  true market cap** — the remaining gap for anything fundamental (leverage, coverage ratios,
+  exposure sizing), which is where SEC DERA XBRL would earn its keep if the audience shifts to
+  credit risk.
+- **Chain *depth* is a small-cap signal; single-hop control is not.** Measured on the built graph,
+  **27 of 825** controlled issuers carry ≥$10B of institutional ownership and 105 carry ≥$1B —
+  Deutsche Telekom 74.3% of T-Mobile US, Brookfield 72.9% of Brookfield Asset Management, GE 62.6%
+  of Baker Hughes, Woodbridge 70% of Thomson Reuters. The **multi-hop** pyramids remain small-cap
+  (the largest, Teekay Tankers, is ~$1.5B), so depth is the governance/minority-risk screen while
+  single-hop control is general-purpose. This corrects an earlier claim that *every* verified chain
+  was micro/nano-cap: the large ones were always present, but with no size column the output never
+  surfaced them.
 - **Board-interlock path *existence* is uninformative.** Measured over a 60-pair sample of
   well-connected companies, **every** pair links within 4 hops (5 at 1 hop, 18 at 2, 27 at 3,
   10 at 4). Lead with the named bridging director and with board centrality
