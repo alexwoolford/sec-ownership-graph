@@ -3,9 +3,19 @@
 *A five-question walkthrough of `secgraph` for one persona. Every answer is produced live by
 curated read-only MCP tools and cited to an SEC accession number. Roughly 10 minutes.*
 
-**Setup:** `python scripts/serve_ownership_mcp.py --database secgraph`, then connect from Claude
-Desktop (see [`.mcp.json`](../.mcp.json)). Ask the questions in natural language — the model picks
-the tool.
+**Setup (clone → tools):**
+
+1. `uv venv && source .venv/bin/activate && uv pip install -e ".[dev,llm]"`
+2. `cp .env.sample .env` — set `NEO4J_PASSWORD` and `SEC_USER_AGENT`
+3. Neo4j Enterprise + GDS up with database `secgraph` built
+4. **Cursor:** open this repo — [`.cursor/mcp.json`](../.cursor/mcp.json) is portable via
+   `${workspaceFolder}` and [`scripts/run_ownership_mcp.sh`](../scripts/run_ownership_mcp.sh).
+   Enable **secgraph-ownership**, reload MCP.
+5. Ask the questions in natural language — the model picks the tool.
+
+`make smoke-mcp` verifies the catalog and demo queries without an MCP client.
+Claude Desktop: root [`.mcp.json`](../.mcp.json) needs `command` set once to the absolute path of
+`scripts/run_ownership_mcp.sh` (Claude does not expand `${workspaceFolder}`).
 
 **Who this is for:** someone who watches 13D filings for a living — event-driven, activist
 defense, or risk arbitrage. Not a quant looking for a signal (see the limits at the end).

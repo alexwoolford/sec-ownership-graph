@@ -769,7 +769,10 @@ class TestInstitutionalHoldings:
                     "acc-q1\tCITADEL ADVISORS LLC",
                     "acc-q2\tCITADEL ADVISORS LLC",
                 ],
-                "INFOTABLE": ["ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT", *holdings],
+                "INFOTABLE": [
+                    "ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT\tPUTCALL",
+                    *holdings,
+                ],
             },
         )
 
@@ -794,6 +797,69 @@ class TestInstitutionalHoldings:
         by_period = {r["report_period"]: r for r in rows}
         assert by_period["2024-12-31"]["value_usd"] == 1000
         assert by_period["2025-03-31"]["value_usd"] == 1800  # accumulation is visible
+
+    def test_option_notional_is_not_counted_as_ownership(self, tmp_path):
+        """The bug that would have ended a demo: PUTCALL was never read.
+
+        Belvedere Trading appeared as Eversource's largest holder at $18.68B while owning **67
+        shares** — the rest was a $3.9B call and a $14.8B put. Options are ~7% of all reported
+        13F dollars and concentrate in market-maker books, so they distort specific issuers
+        badly. They are kept (a reported put is a true fact) but carried separately, because an
+        option is a position, not a stake.
+        """
+        zpath = tmp_path / "13f.zip"
+        self._zip(
+            zpath,
+            subs=["acc-q1\t0001423053\t15-FEB-2025\t31-DEC-2024"],
+            holdings=[
+                "acc-q1\t037833100\t1000\t500\t",  # stock (PUTCALL blank)
+                "acc-q1\t037833100\t9000\t4000\tCall",
+                "acc-q1\t037833100\t7000\t3000\tPut",
+            ],
+        )
+        rows = institutional.build_holdings_rows(
+            [zpath], {"037833100": "0000320193"}, universe_ciks={"0000320193"}
+        )
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["value_usd"] == 1000, "only the stock line is ownership"
+        assert r["shares"] == 500, "option contracts are not shares"
+        assert r["call_notional_usd"] == 9000
+        assert r["put_notional_usd"] == 7000
+
+    def test_option_only_holding_reports_zero_ownership(self, tmp_path):
+        """The Belvedere shape exactly: essentially no stock, enormous option notional."""
+        zpath = tmp_path / "13f.zip"
+        self._zip(
+            zpath,
+            subs=["acc-q1\t0001423053\t15-FEB-2025\t31-DEC-2024"],
+            holdings=[
+                "acc-q1\t037833100\t0\t67\t",
+                "acc-q1\t037833100\t14783000000\t2222000\tPut",
+            ],
+        )
+        rows = institutional.build_holdings_rows(
+            [zpath], {"037833100": "0000320193"}, universe_ciks={"0000320193"}
+        )
+        assert rows[0]["value_usd"] == 0, "must NOT rank as a top holder"
+        assert rows[0]["put_notional_usd"] == 14783000000
+
+    def test_putcall_matching_is_case_insensitive(self, tmp_path):
+        zpath = tmp_path / "13f.zip"
+        self._zip(
+            zpath,
+            subs=["acc-q1\t0001423053\t15-FEB-2025\t31-DEC-2024"],
+            holdings=[
+                "acc-q1\t037833100\t100\t1\tCALL",
+                "acc-q1\t037833100\t200\t2\tput",
+            ],
+        )
+        rows = institutional.build_holdings_rows(
+            [zpath], {"037833100": "0000320193"}, universe_ciks={"0000320193"}
+        )
+        assert rows[0]["value_usd"] == 0
+        assert rows[0]["call_notional_usd"] == 100
+        assert rows[0]["put_notional_usd"] == 200
 
     def test_multiple_cusip_lines_summed_within_a_quarter(self, tmp_path):
         """A manager's split lines for one issuer in one quarter aggregate to one edge."""

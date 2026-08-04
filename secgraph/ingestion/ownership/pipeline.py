@@ -214,6 +214,13 @@ def _steps(
             "Derived — materialize CO_TARGETS activist co-targeting edges",
             extra_args=[*db] + (["--replace"] if refresh else []),
         ),
+        # Influence tiers (12 CFR 225.2(e)). Needs the 13D edges from Phase 2a AND the insider
+        # role edges from Phase 1, because each edge carries a board_seat flag joined on CIK.
+        Step(
+            "materialize_influence_edges.py",
+            "Derived — materialize INFLUENCES tiers + board-seat flag (12 CFR 225.2(e))",
+            extra_args=[*db] + (["--replace"] if refresh else []),
+        ),
         # Phase 2b — CUSIP crosswalk (needs FTD) then 13F institutional holdings.
         Step(
             "download_ownership_data.py",

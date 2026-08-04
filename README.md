@@ -69,9 +69,10 @@ evaluating this should read those numbers before the prose.
 ## Quickstart
 
 ```bash
-# 1. Install
-pip install -e ".[dev,llm]"   # [dev] alone omits openai, which the build needs
-cp .env.sample .env           # fill in NEO4J_PASSWORD and SEC_USER_AGENT
+# 1. Install (project-local venv — required for the MCP launcher)
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev,llm]"   # or: make install
+cp .env.sample .env              # fill in NEO4J_PASSWORD and SEC_USER_AGENT
 
 # 2. Check preconditions in seconds, before committing to a multi-hour build
 make preflight
@@ -83,7 +84,8 @@ make build-exec             # for real
 # 4. Ask it things
 make demo                   # the activist convergence screen
 make prove                  # graph vs SQL, head to head
-make serve                  # curated MCP tools over stdio
+make smoke-mcp              # curated tool catalog + demo queries against the live DB
+make serve                  # curated MCP tools over stdio (or use Cursor — see below)
 ```
 
 ### What a build needs
@@ -98,11 +100,25 @@ make serve                  # curated MCP tools over stdio
 `make preflight` checks every one of these. Each used to surface only after minutes-to-hours of
 crawling, as a generic non-zero exit from a child script.
 
-`make serve` exposes seven read-only tools to Claude Desktop or any MCP client (see
-[`.mcp.json`](.mcp.json)) — `activist_convergence`, `campaign_timeline`, `activist_coalition`,
-`ownership_snapshot`, `control_chain`, `board_interlock_path`, `get_secgraph_schema`. Curated
-tools, not raw text2cypher: there is no Cypher passthrough and no write path, so the scrubs and
-thresholds that make the answers correct cannot be bypassed.
+### Curated MCP (Cursor / Claude Desktop)
+
+Seven read-only tools — `activist_convergence`, `campaign_timeline`, `activist_coalition`,
+`ownership_snapshot`, `control_chain`, `board_interlock_path`, `get_secgraph_schema`. Curated,
+not raw text2cypher: no Cypher passthrough and no write path, so the scrubs and thresholds that
+make the answers correct cannot be bypassed.
+
+**Cursor:** open this repo; [`.cursor/mcp.json`](.cursor/mcp.json) uses `${workspaceFolder}` and
+[`scripts/run_ownership_mcp.sh`](scripts/run_ownership_mcp.sh) so a clone needs no path edits
+after `.venv` exists. Enable **secgraph-ownership**, reload MCP, then ask the demo questions in
+natural language. If a user-level `~/.cursor/mcp.json` also defines `secgraph-ownership`, point
+it at the same launcher (bare `python scripts/serve_ownership_mcp.py` fails outside the venv).
+
+**Claude Desktop:** root [`.mcp.json`](.mcp.json) is the same shape; Claude does not expand
+`${workspaceFolder}` — set `command` once to the absolute path of
+`scripts/run_ownership_mcp.sh` (the launcher still finds `.venv` relative to the repo).
+
+`make smoke-mcp` proves the tool catalog and the demo queries against a live `secgraph` DB
+without an MCP client.
 
 
 ---

@@ -6,19 +6,17 @@ Thin wrapper: build the Neo4j driver via the standard accessors, hand it to
 loop. Curated tools only — no raw Cypher, no write path. Neo4j credentials come from the
 existing ``get_settings()`` accessors (``.env`` / shell env); nothing is logged or echoed.
 
-Run (defaults to the ``secgraph`` database):
-  python scripts/serve_ownership_mcp.py
+Prefer the portable launcher (finds the repo-local ``.venv`` from its own path)::
+
+  ./scripts/run_ownership_mcp.sh --database secgraph
+
+Or, with the venv already active::
+
   python scripts/serve_ownership_mcp.py --database secgraph
 
-Drop into an MCP client (e.g. Claude Desktop) with a ``.mcp.json`` entry:
-  {
-    "mcpServers": {
-      "secgraph-ownership": {
-        "command": "python",
-        "args": ["scripts/serve_ownership_mcp.py", "--database", "secgraph"]
-      }
-    }
-  }
+Cursor / Claude Desktop: see ``.cursor/mcp.json`` and ``.mcp.json``. Cursor expands
+``${workspaceFolder}``; Claude Desktop needs ``command`` set once to the absolute path of
+``scripts/run_ownership_mcp.sh``.
 """
 
 from __future__ import annotations

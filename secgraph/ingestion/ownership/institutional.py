@@ -40,8 +40,12 @@ _HOLDS_QUERY = """
     MERGE (m)-[r:HOLDS {report_period: date(row.report_period)}]->(c)
     SET r.source = 'sec_form13f',
         r.filing_date = date(row.filing_date),
+        // value_usd / shares are SHARE OWNERSHIP only. Option notional is reported separately
+        // because it is not ownership: a $14.8B put on a utility is a position, not a stake.
         r.value_usd = row.value_usd,
         r.shares = row.shares,
+        r.call_notional_usd = row.call_notional_usd,
+        r.put_notional_usd = row.put_notional_usd,
         r.cusip = row.cusip,
         r.accession_number = row.accession_number,
         r.loaded_at = datetime()
@@ -118,26 +122,42 @@ def build_holdings_rows(
             key = (sub["manager_cik"], company_cik, period)
             value = _to_int(row.get("VALUE")) or 0
             shares = _to_int(row.get("SSHPRNAMT")) or 0
+            # PUTCALL splits share ownership from option notional. Reading VALUE without it
+            # counted puts and calls as stock: Belvedere Trading appeared as the largest holder
+            # of Eversource at $18.68B while owning 67 actual shares (the rest was a $3.9B call
+            # and a $14.8B put). ~7% of all reported 13F dollars are options, and because they
+            # concentrate in market-maker books they distort specific issuers badly.
+            #
+            # Options are kept, not dropped — a put is a true reported fact, and truth-in-
+            # inclusion says label rather than delete. They just are not ownership, so they get
+            # their own properties and stay out of value_usd/shares.
+            putcall = (row.get("PUTCALL") or "").strip().upper()
             existing = agg.get(key)
             if existing is None:
-                agg[key] = {
+                existing = agg[key] = {
                     "manager_cik": sub["manager_cik"],
                     "manager_name": sub.get("manager_name", ""),
                     "company_cik": company_cik,
                     "report_period": period,
                     "filing_date": sub["filing_date"],
-                    "value_usd": value,
-                    "shares": shares,
+                    "value_usd": 0,
+                    "shares": 0,
+                    "call_notional_usd": 0,
+                    "put_notional_usd": 0,
                     "cusip": cusip,
                     "accession_number": accession,
                 }
+            if putcall == "CALL":
+                existing["call_notional_usd"] += value
+            elif putcall == "PUT":
+                existing["put_notional_usd"] += value
             else:
                 existing["value_usd"] += value
                 existing["shares"] += shares
-                # A later amendment for the same period supersedes the filing date.
-                if sub["filing_date"] > existing["filing_date"]:
-                    existing["filing_date"] = sub["filing_date"]
-                    existing["accession_number"] = accession
+            # A later amendment for the same period supersedes the filing date.
+            if sub["filing_date"] > existing["filing_date"]:
+                existing["filing_date"] = sub["filing_date"]
+                existing["accession_number"] = accession
     log.info(
         f"  {holding_rows:,} in-universe holdings → {len(agg):,} "
         f"(manager, company, quarter) HOLDS edges"

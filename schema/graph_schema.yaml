@@ -142,6 +142,28 @@ relationships:
     required_properties: [source, computed_at]
     optional_properties: [cik]
 
+  INFLUENCES:
+    pattern: "(BeneficialOwner)-[:INFLUENCES]->(Company)"
+    description: >
+      A 13D stake at or above a Federal Reserve control-presumption tier (12 CFR 225.2(e)):
+      10 / 15 / 25 / 50 percent. DELIBERATELY SEPARATE FROM `CONTROLS`, which stays at >=50% so
+      that "control" keeps meaning control — a 25% holder has influence, blocking rights and
+      often a board designee, but not control, and relabelling it invites a correct objection.
+      Exists because a >=50% single stake is structurally anti-selected for large caps: an issuer
+      with a majority holder has little float, so the >=50% set was finding illiquidity as much as
+      control. Median issuer size rises monotonically as the tier falls, and at 25% the set
+      includes Berkshire, Walmart, Charter and Ferrari.
+      CAVEAT that must travel with it: `percent_of_class` is percent of the class covered by the
+      filing, NOT voting power. Several of the largest names here are dual-class (Berkshire, the
+      Liberty complex, Carvana, Sea), where economic and voting stakes diverge — so the 25%-of-
+      voting test cannot be evaluated cleanly from this data. `board_seat` is the second,
+      independent limb of 225.2(e): true when the same CIK also currently sits on the board via
+      Form 3/4/5. Self-filings excluded, as in `CONTROLS`.
+    source: BeneficialOwner
+    target: Company
+    required_properties: [percent_of_class, tier, source, computed_at]
+    optional_properties: [accession_number, filing_date, board_seat, board_seat_last_seen]
+
   CO_TARGETS:
     pattern: "(BeneficialOwner)-[:CO_TARGETS]->(BeneficialOwner)"
     description: "Two 13D filers co-target >=2 of the same issuers (derived activist co-targeting edge, stored undirected once with a.cik<b.cik). Substrate for the wolf-pack coalition component; custodial/broker hubs are labelled is_custodial on the node and excluded at projection time rather than deleted."
@@ -192,10 +214,24 @@ relationships:
       report_period so each quarter is a distinct edge (a position time series,
       not a latest-only snapshot). Slice/compare quarter-over-quarter on
       report_period to see accumulation/trimming.
+      IMPORTANT: value_usd/shares are SHARE OWNERSHIP only. 13F also reports option positions,
+      and their notional is carried separately in call_notional_usd / put_notional_usd —
+      an option is a position, not a stake. Conflating them (reading VALUE without PUTCALL)
+      made a market maker holding 67 shares of Eversource look like its largest owner at
+      $18.68B. Roughly 7% of all reported 13F dollars are options, concentrated in
+      market-maker books, so the distortion lands hard on specific issuers.
     source: InstitutionalManager
     target: Company
     required_properties: [report_period, filing_date, source, loaded_at]
-    optional_properties: [value_usd, shares, cusip, accession_number]
+    optional_properties:
+      [
+        value_usd,
+        shares,
+        call_notional_usd,
+        put_notional_usd,
+        cusip,
+        accession_number,
+      ]
 
 # ---------------------------------------------------------------------------
 # Required constraints (UNIQUE)

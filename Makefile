@@ -6,7 +6,7 @@ DB ?= secgraph
 # override on a NO-GO (`make build-exec QUARTERS_345=16`).
 QUARTERS_345 ?= 16
 
-.PHONY: help install lint format test check preflight demo prove build build-exec refresh refresh-exec serve clean
+.PHONY: help install lint format test check preflight demo prove smoke-mcp build build-exec refresh refresh-exec serve clean
 
 help:
 	@echo "SEC ownership graph — common commands"
@@ -19,6 +19,7 @@ help:
 	@echo ""
 	@echo "  make demo           Activist convergence screen + the MNRO timeline"
 	@echo "  make prove          Graph-vs-SQL head-to-head for all three wins"
+	@echo "  make smoke-mcp      Curated MCP catalog + demo queries (live DB, read-only)"
 	@echo "  make serve          Serve the curated MCP tools over stdio"
 	@echo ""
 	@echo "  make build          Dry-run the full graph build (plan + preflight)"
@@ -58,8 +59,11 @@ demo:
 prove:
 	$(PYTHON) scripts/prove_graph_native_wins.py --database $(DB)
 
+smoke-mcp:
+	$(PYTHON) scripts/smoke_ownership_mcp.py --database $(DB)
+
 serve:
-	$(PYTHON) scripts/serve_ownership_mcp.py --database $(DB)
+	./scripts/run_ownership_mcp.sh --database $(DB)
 
 # --- Build / refresh (dry-run by default) ----------------------------------- #
 build:

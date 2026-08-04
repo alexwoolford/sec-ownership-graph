@@ -221,13 +221,17 @@ inconclusive and stage more quarters.
 - **A system `NEO4J_PASSWORD` silently overrides `.env`.** pydantic-settings ranks real env vars
   above the `.env` file, so an exported password wins and `settings.py` warns rather than fails.
   `unset NEO4J_PASSWORD`, or call `get_settings_from_env_file()` to force `.env`.
-- **The committed `.venv/` is empty** — three files, no packages. `python` resolves to Anaconda,
-  which is where the dev install actually lives. Don't trust `.venv/bin/python`; it has no pytest.
+- **Prefer the project `.venv`.** Create it with `uv venv`, then
+  `uv pip install -e ".[dev,llm]"` (or `make install` once the venv has pip). The MCP launcher
+  `scripts/run_ownership_mcp.sh` binds to `.venv/bin/python`; a bare system `python` that lacks
+  the editable install will fail with `ModuleNotFoundError: secgraph` when running scripts.
 - **The declared dependency pins do not match what works.** `pyproject.toml` says
   `neo4j>=5.18.1,<6.0.0`, but the build was verified end-to-end on driver **6.1.0** against Neo4j
   2026.05; likewise `pandas` and `pytest` run above their ceilings. `graphdatascience` (1.22) and
   `fastmcp` (2.14.7) had to be installed by hand — neither the density gate nor the MCP surface
   works without them. Treat the upper bounds as untested rather than authoritative.
+  Keep `tenacity` able to resolve to 9.x (`>=8,<10`): a `<9` ceiling forces
+  `graphdatascience==1.12` → `pyarrow==16.1.0`, which has no Python 3.13 wheels.
 - **`fastmcp` is a core dependency but the MCP test `importorskip`s it.** With it absent,
   `tests/unit/test_ownership_mcp_server.py` skips silently and a green suite tells you nothing
   about the serving layer. Install it and the count goes 273 passed / 1 skipped → **281 passed /
