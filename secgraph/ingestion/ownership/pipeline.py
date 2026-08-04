@@ -84,6 +84,18 @@ class Step:
     refresh_only: bool = False
 
 
+def _relative_csv_path() -> str:
+    """Control-figures path relative to the repo root, falling back to absolute.
+
+    Keeps the printed plan machine-independent. The fallback matters for tests, which point
+    ``_CONTROL_FIGURES_CSV`` at a tmp dir outside the repo.
+    """
+    try:
+        return str(_CONTROL_FIGURES_CSV.relative_to(_REPO_ROOT))
+    except ValueError:
+        return str(_CONTROL_FIGURES_CSV)
+
+
 def _steps(
     database: str,
     *,
@@ -169,7 +181,9 @@ def _steps(
                 Step(
                     "load_control_figures.py",
                     "Derived — apply committed control figures (deterministic, no LLM)",
-                    extra_args=[*db, "--csv", str(_CONTROL_FIGURES_CSV)],
+                    # Repo-relative, not absolute: the printed plan is copy-pasteable and does
+                    # not leak a machine-specific path into logs or docs.
+                    extra_args=[*db, "--csv", _relative_csv_path()],
                 )
             ]
             if _CONTROL_FIGURES_CSV.exists()
