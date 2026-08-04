@@ -1,7 +1,7 @@
 # Public Company Graph — Schema Reference
 
 > **Auto-generated** from `schema/graph_schema.yaml`.
-> Last generated: 2026-08-04 11:26 UTC
+> Last generated: 2026-08-04 19:46 UTC
 >
 > Do **not** edit this file by hand. Run:
 > ```bash
@@ -12,7 +12,7 @@
 
 ### Company
 
-A public issuer that files with the SEC. The universe is SEC filers with a ticker (see scripts/load_company_universe.py); every ownership edge attaches to one of these. NOTE: this graph carries no market-cap, revenue or financial data — results cannot be ranked by materiality. See docs/reference_architecture_secgraph.md "Honest limits".
+A public issuer that files with the SEC. The universe is SEC filers with a ticker (see scripts/load_company_universe.py); every ownership edge attaches to one of these. NOTE: no revenue, assets or true market cap. `institutional_value_usd` is a size PROXY derived from 13F holdings (see that property) and is absent for ~25% of the universe. See docs/reference_architecture_secgraph.md "Honest limits".
 
 
 - **Unique key:** `cik`
@@ -34,6 +34,10 @@ A public issuer that files with the SEC. The universe is SEC filers with a ticke
 | `sic_code` | String | SIC industry code (from EDGAR) |
 | `state_of_incorp` | String | State/country of incorporation (from EDGAR) |
 | `ownership_component` | Long | WCC component id over the ownership-interlock graph (GDS) |
+| `institutional_value_usd` | Float | Size PROXY, not a market cap: total 13F-reported institutional dollars in this issuer for one quarter (sum of HOLDS.value_usd). Exists so structural results can be ranked by materiality — a $95B control relationship and a $30 one are not the same finding. Three limits, all load-bearing: (1) ABSENT for ~25% of the universe (no 13F coverage), and a null means "not institutionally held", never zero; (2) measures FREE FLOAT, so it understates exactly the concentrated-ownership issuers control chains are about — conservative, never a false positive; (3) ETFs are in the universe and 13F filers report them, so SPY/QQQ rank high on other people's money. Written by materialize_materiality.py.
+ |
+| `institutional_value_period` | Date | The 13F report_period institutional_value_usd was summed over. Required for auditability: the figure is one quarter's snapshot, not a running total, and 13F has a 2024 coverage step-up — so the period must travel with the number.
+ |
 
 ### Insider
 

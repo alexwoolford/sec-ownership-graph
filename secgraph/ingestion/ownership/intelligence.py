@@ -203,13 +203,26 @@ def chains_from_paths(
         if len(steps) < 2:
             continue
 
-        rendered = [{"cik": steps[0].get("cik"), "name": steps[0].get("name"), "pct": 0.0}]
+        # `institutional_value_usd` rides along on each step so a consumer can see the scale of
+        # the controlled issuer. Without it, Deutsche Telekom's 74.3% of T-Mobile ($95B) and a
+        # 74% stake in a $30 shell render identically.
+        rendered = [
+            {
+                "cik": steps[0].get("cik"),
+                "name": steps[0].get("name"),
+                "ticker": steps[0].get("ticker"),
+                "pct": 0.0,
+                "institutional_value_usd": steps[0].get("institutional_value_usd"),
+            }
+        ]
         for idx, step in enumerate(steps[1:]):
             rendered.append(
                 {
                     "cik": step.get("cik"),
                     "name": step.get("name"),
+                    "ticker": step.get("ticker"),
                     "pct": pcts[idx] if idx < len(pcts) else None,
+                    "institutional_value_usd": step.get("institutional_value_usd"),
                 }
             )
         chains.append(rendered)
@@ -315,7 +328,8 @@ class OwnershipIntelligenceEngine:
             WITH p, [r IN relationships(p) WHERE type(r) = 'CONTROLS'] AS ctrl
             WHERE size(ctrl) >= 1
             RETURN [n IN nodes(p) WHERE NOT (n:BeneficialOwner AND n <> head(nodes(p)))
-                    | {{cik: n.cik, name: coalesce(n.name, n.cik)}}] AS steps,
+                    | {{cik: n.cik, name: coalesce(n.name, n.cik), ticker: n.ticker,
+                         institutional_value_usd: n.institutional_value_usd}}] AS steps,
                    [r IN ctrl | r.percent_of_class] AS pcts,
                    [r IN ctrl | r.accession_number] AS accessions,
                    [r IN ctrl | r.filing_date] AS filing_dates,
@@ -381,6 +395,40 @@ class OwnershipIntelligenceEngine:
             ORDER BY r.shared_target_count DESC
             """,
             ciks=member_ciks,
+        ).data()
+        return cast("list[dict[str, Any]]", rows)
+
+    def _coalition_top_targets(
+        self, session, member_ciks: list[str], limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """The coalition's 13D targets, largest first, named.
+
+        Without this the coalition reported *who* was in it but only CIKs for *what* they were
+        targeting, so the output read as opaque and the recognizable names were invisible. Ranked
+        by ``institutional_value_usd`` because the unranked view surfaced $15M closed-end funds
+        ahead of Deere and Occidental — the same names were always there, just unsorted.
+
+        ``value_usd`` is null for issuers with no 13F coverage; they sort last rather than being
+        treated as zero (absence means "not institutionally held", not "smallest").
+        """
+        rows = session.run(
+            """
+            MATCH (m:BeneficialOwner)-[:BENEFICIAL_OWNER_OF {filing_type:'13D'}]->(c:Company)
+            WHERE m.cik IN $ciks
+            WITH c, collect(DISTINCT m.name) AS filers
+            RETURN c.cik AS cik, c.ticker AS ticker, coalesce(c.name, c.cik) AS name,
+                   c.institutional_value_usd AS value_usd,
+                   toString(c.institutional_value_period) AS value_period,
+                   size(filers) AS coalition_filers
+            // Cypher has no NULLS LAST clause, and DESC sorts nulls FIRST (verified on 2026.05)
+            // — which would put every unknown-size issuer at the top. Sort on an explicit
+            // has-value flag so nulls land last: no 13F coverage means "unknown size", not
+            // "smallest", and it must not outrank a named $114B target.
+            ORDER BY value_usd IS NOT NULL DESC, value_usd DESC, name
+            LIMIT $limit
+            """,
+            ciks=member_ciks,
+            limit=limit,
         ).data()
         return cast("list[dict[str, Any]]", rows)
 
@@ -585,6 +633,7 @@ class OwnershipIntelligenceEngine:
         with self.driver.session(database=self.database) as session:
             diameter = self._coalition_diameter(session, member_ciks)
             evidence = self._coalition_evidence(session, member_ciks)
+            top_targets = self._coalition_top_targets(session, member_ciks)
 
         return OwnershipIntelligenceResult(
             anchor=anchor["name"],
@@ -605,6 +654,9 @@ class OwnershipIntelligenceEngine:
                     sorted(m["name"] or m["cik"] for m in members)
                 ),
                 "diameter_hops": diameter,
+                # What the coalition actually targets, largest first. The members answer "who";
+                # this answers "on what" — and ranked, it leads with names a desk trades.
+                "top_targets": top_targets,
             },
             evidence=evidence,
             metadata=meta,

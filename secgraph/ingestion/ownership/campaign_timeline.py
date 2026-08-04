@@ -144,6 +144,22 @@ def classify_filer(name: str | None, filing_type: str | None) -> str:
     return "other_holder"
 
 
+def format_institutional_value(value: float | None) -> str:
+    """Render the 13F size proxy for display, or note its absence.
+
+    Shown wherever results are size-ranked: an ordering the reader cannot see the basis for looks
+    arbitrary. "no 13F coverage" is stated explicitly rather than blank, because absence is a
+    fact about the issuer (not institutionally held), not a gap in the rendering.
+    """
+    if value is None:
+        return ", no 13F coverage"
+    if value >= 1e9:
+        return f", ${value / 1e9:,.1f}B institutional"
+    if value >= 1e6:
+        return f", ${value / 1e6:,.0f}M institutional"
+    return f", ${value:,.0f} institutional"
+
+
 def order_filings(filings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sort filings oldest-first by date; undated entries sink to the end.
 
@@ -369,7 +385,8 @@ class CampaignTimelineEngine:
                 accession_number: e.accession_number
              }) AS filings
         WHERE size(filings) >= $min_activists
-        RETURN c.cik AS cik, c.name AS name, c.ticker AS ticker, filings
+        RETURN c.cik AS cik, c.name AS name, c.ticker AS ticker,
+               c.institutional_value_usd AS value_usd, filings
         """
         with self.driver.session(database=self.database) as session:
             rows = cast(
@@ -401,6 +418,7 @@ class CampaignTimelineEngine:
                         "cik": row["cik"],
                         "name": row["name"],
                         "ticker": row["ticker"],
+                        "institutional_value_usd": row.get("value_usd"),
                     },
                     "franchises": franchises,
                     "franchise_count": len(franchises),
@@ -410,7 +428,18 @@ class CampaignTimelineEngine:
                 }
             )
 
-        hits.sort(key=lambda h: str(h["filings"][-1].get("filing_date") or ""), reverse=True)
+        # Rank by MATERIALITY, not recency. Recency-first surfaced $15M closed-end funds above
+        # multi-billion operating companies, so the screen read as a niche CEF-arbitrage tool
+        # when the same output already contained recognizable large caps. Issuers with no 13F
+        # coverage sort last (unknown size, not smallest); recency breaks ties.
+        hits.sort(
+            key=lambda h: (
+                h["company"].get("institutional_value_usd") is not None,
+                h["company"].get("institutional_value_usd") or 0.0,
+                str(h["filings"][-1].get("filing_date") or ""),
+            ),
+            reverse=True,
+        )
         hits = hits[:limit]
 
         if not hits:
@@ -495,7 +524,8 @@ class CampaignTimelineEngine:
                 c = h["company"]
                 lines.append(
                     f"\n  {c['ticker'] or c['cik']} — {c['name']} "
-                    f"({h['franchise_count']} franchises within {h['span_days']} days)"
+                    f"({h['franchise_count']} franchises within {h['span_days']} days"
+                    f"{format_institutional_value(c.get('institutional_value_usd'))})"
                 )
                 for f in h["filings"]:
                     pct = f" {f['percent_of_class']}%" if f.get("percent_of_class") else ""

@@ -242,6 +242,14 @@ def _steps(
             # --replace on refresh: a changed crosswalk requires re-loading HOLDS cleanly.
             extra_args=[*db] + (["--replace"] if refresh else []),
         ),
+        # Derived size proxy. Must follow the 13F load — it sums HOLDS.value_usd. This is what
+        # makes every structural result rankable by materiality; without it a $95B control
+        # relationship and a $30 one render as peer rows.
+        Step(
+            "materialize_materiality.py",
+            "Derived — materialize the institutional-value size proxy on Company",
+            extra_args=[*db] + (["--replace"] if refresh else []),
+        ),
     ]
     if refresh:
         return [s for s in plan if not s.build_only]
