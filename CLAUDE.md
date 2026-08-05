@@ -188,7 +188,7 @@ property equality, so without it `CONTROLS*` stops at one hop.
 
 ### Schema contract — the single source of truth
 
-**`schema/graph_schema.yaml`** (4 node labels, 9 relationship types) is loaded at import time by
+**`schema/graph_schema.yaml`** (4 node labels, 10 relationship types) is loaded at import time by
 `schema/contract.py`. **Do not reference a label or relationship type in Cypher that isn't declared
 there** — `tests/unit/test_schema_consistency.py` scans every `.py` file and fails the build.
 Declare it in the YAML *first*, then write the query, then
