@@ -32,7 +32,7 @@
 **First mover:** Saba Capital Management, L.P. (2024-08-01).
   - GAMCO INVESTORS, INC. ET AL followed 78 days later.
 
-## MNRO — MONRO, INC. · 2 franchises within 96 days, $606M institutional
+## MNRO — MONRO, INC. · 2 franchises within 96 days, $605M institutional
 
 | Date | Filer | % of class | Accession |
 | --- | --- | --- | --- |

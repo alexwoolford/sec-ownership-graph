@@ -572,6 +572,8 @@ CALL {
   UNION ALL MATCH ()-[r:CONTROLS]->() RETURN 'CONTROLS' AS k, count(r) AS c, null AS max_date
   UNION ALL MATCH ()-[r:SAME_ENTITY_AS]->() RETURN 'SAME_ENTITY_AS' AS k, count(r) AS c, null AS max_date
   UNION ALL MATCH ()-[r:CO_TARGETS]->() RETURN 'CO_TARGETS' AS k, count(r) AS c, null AS max_date
+  UNION ALL MATCH ()-[r:INFLUENCES]->()
+            RETURN 'INFLUENCES' AS k, count(r) AS c, toString(max(r.filing_date)) AS max_date
 }
 RETURN k, c, max_date
 """
