@@ -1,7 +1,7 @@
 # Public Company Graph — Schema Reference
 
 > **Auto-generated** from `schema/graph_schema.yaml`.
-> Last generated: 2026-08-05 05:10 UTC
+> Last generated: 2026-08-05 21:26 UTC
 >
 > Do **not** edit this file by hand. Run:
 > ```bash
@@ -48,6 +48,18 @@ A public issuer that files with the SEC. The universe is SEC filers with a ticke
  |
 | `size_source` | String | Which input produced size_usd: "dera_assets" (balance-sheet Assets) or "institutional_13f" (13F free-float proxy). Absent when size_usd is null. This is what keeps a size-ranked answer auditable — without it the two measures are indistinguishable in output despite meaning different things.
  |
+| `interlock_betweenness` | Float | Betweenness centrality over the UNDIRECTED company-to-company board-interlock graph (SHARES_DIRECTOR, which already carries the human-director and fund-family scrubs) — how often this board sits on the shortest path between two others. Answers "which boards broker between otherwise-unconnected clusters", a whole-graph question no per-row screener can answer. ABSENT (never 0) for a company outside the scrubbed projection: fund vehicles are excluded by name, and a company with no human-director interlock has no score. A null means "not in the interlock graph", which is a different claim from "in it, with no brokering role" — 1,129 companies carry a measured 0.0, which is a real finding. The projection MUST be undirected: a directed one makes this a proxy for node-insertion order (node id tracks market-cap rank), which fabricated a large-cap ranking. Top brokers are genuinely mixed-cap — XOS $0.1B with 18 real interlock neighbours sits alongside IFF $25.5B — because boards that bridge separate clusters are often small companies whose directors also sit on larger ones. Band by size_usd if you need recognizable names; do not expect centrality to track size. Deterministic — every GDS call is pinned to concurrency=1, since the parallel default is not reproducible. Written by materialize_interlock_features.py.
+ |
+| `interlock_community` | Long | Raw Louvain community id over the same scrubbed interlock projection. NOT PORTABLE across builds: the integer is arbitrary and carries no meaning beyond "these nodes are in the same cluster in THIS build". Stable within a build only because concurrency=1 is pinned; the unpinned default reassigned 52.4% of nodes between two identical runs. For anything that must survive a rebuild — a saved query, a visualization colour, a comparison between two graphs — use interlock_community_anchor instead. Kept for reference and debugging. Written by materialize_interlock_features.py.
+ |
+| `interlock_community_anchor` | String | The lowest CIK in this node's Louvain cluster — a STABLE handle for the community, derived from membership rather than from GDS iteration order. This is the property to group, colour or compare by: verified 100% of members map to the same anchor across independent runs, where the raw id does not. Also names the cluster with something a human can look up, and reuses CIK (the repo's hard key) so it adds no new join axis. Absent wherever interlock_community is absent. Written by materialize_interlock_features.py.
+ |
+| `interlock_community_size` | Long | Number of companies in this node's interlock cluster. Travels with the anchor because a 2-company cluster and an 809-company cluster are not the same finding, and a consumer filtering for meaningful clusters should not have to re-aggregate to find out. Written by materialize_interlock_features.py.
+ |
+| `interlock_degree` | Long | Count of distinct companies sharing at least one human director with this one — the degree over the materialized SHARES_DIRECTOR edge, so the number matches the edges actually traversable from the node. Absent for a company with no interlock. Written by materialize_interlock_features.py.
+ |
+| `held_by_count` | Long | Number of distinct 13F managers reporting a position in this issuer. A traversal-cost guard, not a materiality measure: it lets a client threshold BEFORE expanding the HOLDS layer rather than discovering the fan-out live. Absent for the ~25% of issuers with no 13F coverage. Written by materialize_materiality.py.
+ |
 
 ### Insider
 
@@ -77,6 +89,13 @@ SEC Form 13F institutional investment manager, CIK-keyed
 | `name` | String | Manager name as filed |
 | `loaded_at` | DateTime | When node was loaded |
 
+#### Optional Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `holds_count` | Long | Number of distinct issuers this manager reports a position in. A traversal-cost guard, not an analytic measure. HOLDS is 6.7M edges with out-degree p50 220 and a worst case of 45,694 on a single manager — expanding that node in an interactive client hangs it, and the client cannot know the cost before paying it. Reading this first makes the fan-out knowable in advance. Written by materialize_materiality.py.
+ |
+
 ### BeneficialOwner
 
 SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-slug
@@ -97,8 +116,8 @@ SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-sl
 |----------|------|-------------|
 | `cik` | String | Filer CIK when resolvable from the submission header |
 | `resolved` | Boolean | True if owner_key is a CIK, False if a name-slug |
-| `is_custodial` | Boolean | True for broker/custodian/index hubs that bridge unrelated activists. Labelled (never deleted) so the fact survives; excluded at coalition projection time for precision. |
-| `coalition_id` | Long | Activist coalition component id (GDS WCC over CO_TARGETS, custodial hubs excluded) |
+| `is_custodial` | Boolean | True for broker/custodian/index hubs that bridge unrelated activists. Labelled (never deleted) so the co-filing fact survives; excluded at coalition projection time for precision. Fixing a leak in this scrub once moved a published coalition figure from 22 to 16, which is why the exclusion is auditable rather than baked into the data.
+ |
 
 ## Relationship Types
 
@@ -211,6 +230,12 @@ SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-sl
 | Insider | `name` |
 | InstitutionalManager | `name` |
 | BeneficialOwner | `name` |
+
+### Fulltext Indexes
+
+| Name | Labels | Properties |
+|------|--------|------------|
+| `entity_name_fulltext` | Company, Insider, InstitutionalManager, BeneficialOwner | `name` |
 
 ## Validation
 

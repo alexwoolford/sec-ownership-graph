@@ -249,3 +249,74 @@ class TestSchemaConsistency:
         """Verify all nodes have a unique_key defined."""
         for node_name, node_def in schema.get("nodes", {}).items():
             assert "unique_key" in node_def, f"Node {node_name} missing 'unique_key'"
+
+
+class TestProvenanceIsDeclared:
+    """Every property must say where it came from, and the claim must be checkable.
+
+    The user's requirement was: "for each property on each node/relationship, exactly how it got
+    there and where it came from." Before this, 24 of 28 node properties and ALL 40 relationship
+    properties named no writer, and the runtime `source` string values existed only in Python — a
+    reader could see that a `source` property was declared but never learn what value it holds.
+
+    These tests keep the declarations honest. scripts/validate_graph_schema.py additionally checks
+    them against the live database.
+    """
+
+    def _schema(self):
+        import yaml
+
+        with open(get_project_root() / "schema" / "graph_schema.yaml") as f:
+            return yaml.safe_load(f)
+
+    def test_every_node_label_names_its_writer(self):
+        schema = self._schema()
+        missing = [label for label, nd in schema["nodes"].items() if not nd.get("written_by")]
+        assert not missing, f"labels with no declared writer: {missing}"
+
+    def test_every_declared_writer_exists_on_disk(self):
+        """A renamed module must fail here, not leave the schema quietly fictional."""
+        schema = self._schema()
+        root = get_project_root()
+        bad = []
+        for label, nd in schema["nodes"].items():
+            writers = [nd.get("written_by"), *(nd.get("property_writers") or {}).values()]
+            bad += [(label, w) for w in writers if w and not (root / w).exists()]
+        for rel, rd in schema["relationships"].items():
+            w = rd.get("written_by")
+            if w and not (root / w).exists():
+                bad.append((rel, w))
+        assert not bad, f"declared writers that do not exist: {bad}"
+
+    def test_every_relationship_declares_writer_and_source_value(self):
+        """`source_value` is the literal string the edge's `source` property carries. Declaring it
+        is what lets the validator prove the schema matches the graph rather than describing it."""
+        schema = self._schema()
+        missing = [
+            rel
+            for rel, rd in schema["relationships"].items()
+            if not rd.get("written_by") or not rd.get("source_value")
+        ]
+        assert not missing, f"relationships missing written_by/source_value: {missing}"
+
+    def test_no_phantom_properties(self):
+        """A declared property that no code writes is worse than an undocumented one — it invites
+        a query that always returns null. `coalition_id` was exactly that: declared as "GDS WCC over
+        CO_TARGETS" with zero .py references, attributed to an algorithm the repo does not run."""
+        schema = self._schema()
+        props = set()
+        for nd in schema["nodes"].values():
+            props |= set((nd.get("optional_properties") or {}).keys())
+        assert "coalition_id" not in props, (
+            "coalition_id is a phantom property — nothing writes it. If it is reintroduced, "
+            "something must actually populate it."
+        )
+
+    def test_fulltext_index_is_declared(self):
+        """Bloom's search bar and any name-based entry point need this. It was absent, so entity
+        lookup was a full label scan — out-of-the-box Neo4j the repo had coded around."""
+        schema = self._schema()
+        ft = (schema.get("indexes") or {}).get("fulltext") or []
+        assert ft, "no fulltext index declared"
+        labels = {lbl for idx in ft for lbl in idx.get("labels", [])}
+        assert {"Company", "BeneficialOwner", "Insider", "InstitutionalManager"} <= labels

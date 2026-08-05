@@ -20,9 +20,11 @@ DEFAULT_JACCARD_THRESHOLD = 0.3
 # that cause false exact matches (1.0 similarity)
 MIN_DESCRIPTION_LENGTH_FOR_SIMILARITY = 200  # characters
 
-# PageRank defaults
-DEFAULT_MAX_ITERATIONS = 20
-DEFAULT_DAMPING_FACTOR = 0.85
+# NOTE: PageRank defaults (DEFAULT_MAX_ITERATIONS / DEFAULT_DAMPING_FACTOR) were removed — they had
+# zero references and were legacy from a prior project. This graph runs betweenness and Louvain
+# (see ingestion/ownership/interlock_features.py) and deliberately does NOT run PageRank: on an
+# undirected board-interlock graph it is close to a degree restatement, which interlock_degree
+# already gives directly. If PageRank is ever added, it needs a use case betweenness cannot serve.
 
 # Embedding defaults
 EMBEDDING_MODEL = "text-embedding-3-small"

@@ -7,7 +7,7 @@
 # .py file to fail the build if any Cypher references a label or relationship type not declared
 # here. So: declare it here FIRST, then write the query.
 #
-# Four node labels, nine relationship types. Everything joins on hard keys (CIK / CUSIP-9),
+# Four node labels, TEN relationship types. Everything joins on hard keys (CIK / CUSIP-9),
 # never on fuzzy name matching.
 #
 # Derived (materialized) relationships — computed, not filed:
@@ -15,6 +15,13 @@
 #   CONTROLS         verified >=50% 13D stake                   (materialize_control_edges.py)
 #   SAME_ENTITY_AS   CIK identity bridge; makes chains transitive (same script)
 #   CO_TARGETS       two 13D filers co-target >=2 issuers       (materialize_cotarget_edges.py)
+#   INFLUENCES       12 CFR 225.2(e) presumption tiers          (materialize_influence_edges.py)
+#
+# Provenance is machine-checked, not just described. Each node label carries `written_by` (its
+# default writing module) plus `property_writers` for the exceptions; each relationship carries
+# `written_by` and `source_value` (the literal string its `source` property holds in the graph).
+# scripts/validate_graph_schema.py verifies every declared module exists and every source_value is
+# actually present in the live database.
 #
 # How to regenerate docs:
 #   python scripts/generate_schema_docs.py --execute
@@ -25,6 +32,15 @@
 nodes:
   Company:
     unique_key: cik
+    # Default writer for this label's properties; property_writers lists the
+    # exceptions. Machine-checked by scripts/validate_graph_schema.py.
+    written_by: secgraph/ingestion/ownership/universe.py
+    property_writers:
+      institutional_value_period: secgraph/ingestion/ownership/materiality.py
+      ownership_component: secgraph/ingestion/ownership/density.py
+      size_source: secgraph/ingestion/ownership/materiality.py
+      total_assets_accession: secgraph/ingestion/ownership/financials.py
+      total_assets_period: secgraph/ingestion/ownership/financials.py
     description: >
       A public issuer that files with the SEC. The universe is SEC filers with a ticker
       (see scripts/load_company_universe.py); every ownership edge attaches to one of these.
@@ -108,9 +124,72 @@ nodes:
           "institutional_13f" (13F free-float proxy). Absent when size_usd is null. This is what
           keeps a size-ranked answer auditable — without it the two measures are
           indistinguishable in output despite meaning different things.
+      interlock_betweenness:
+        type: Float
+        description: >
+          Betweenness centrality over the UNDIRECTED company-to-company board-interlock graph
+          (SHARES_DIRECTOR, which already carries the human-director and fund-family scrubs) —
+          how often this board sits on the shortest path between two others. Answers
+          "which boards broker between otherwise-unconnected clusters", a whole-graph question no
+          per-row screener can answer. ABSENT (never 0) for a company outside the scrubbed
+          projection: fund vehicles are excluded by name, and a company with no human-director
+          interlock has no score. A null means "not in the interlock graph", which is a different
+          claim from "in it, with no brokering role" — 1,129 companies carry a measured 0.0, which
+          is a real finding. The projection MUST be undirected: a directed one makes this a proxy
+          for node-insertion order (node id tracks market-cap rank), which fabricated a
+          large-cap ranking. Top brokers are genuinely mixed-cap — XOS $0.1B with 18 real interlock
+          neighbours sits alongside IFF $25.5B — because boards that bridge separate clusters are
+          often small companies whose directors also sit on larger ones. Band by size_usd if you
+          need recognizable names; do not expect centrality to track size. Deterministic — every
+          GDS call is pinned to concurrency=1, since the parallel default is not reproducible.
+          Written by materialize_interlock_features.py.
+      interlock_community:
+        type: Long
+        description: >
+          Raw Louvain community id over the same scrubbed interlock projection. NOT PORTABLE across
+          builds: the integer is arbitrary and carries no meaning beyond "these nodes are in the
+          same cluster in THIS build". Stable within a build only because concurrency=1 is pinned;
+          the unpinned default reassigned 52.4% of nodes between two identical runs. For anything
+          that must survive a rebuild — a saved query, a visualization colour, a comparison between
+          two graphs — use interlock_community_anchor instead. Kept for reference and debugging.
+          Written by materialize_interlock_features.py.
+      interlock_community_anchor:
+        type: String
+        description: >
+          The lowest CIK in this node's Louvain cluster — a STABLE handle for the community,
+          derived from membership rather than from GDS iteration order. This is the property to
+          group, colour or compare by: verified 100% of members map to the same anchor across
+          independent runs, where the raw id does not. Also names the cluster with something a
+          human can look up, and reuses CIK (the repo's hard key) so it adds no new join axis.
+          Absent wherever interlock_community is absent. Written by
+          materialize_interlock_features.py.
+      interlock_community_size:
+        type: Long
+        description: >
+          Number of companies in this node's interlock cluster. Travels with the anchor because a
+          2-company cluster and an 809-company cluster are not the same finding, and a consumer
+          filtering for meaningful clusters should not have to re-aggregate to find out.
+          Written by materialize_interlock_features.py.
+      interlock_degree:
+        type: Long
+        description: >
+          Count of distinct companies sharing at least one human director with this one — the
+          degree over the materialized SHARES_DIRECTOR edge, so the number matches the edges
+          actually traversable from the node. Absent for a company with no interlock.
+          Written by materialize_interlock_features.py.
+      held_by_count:
+        type: Long
+        description: >
+          Number of distinct 13F managers reporting a position in this issuer. A traversal-cost
+          guard, not a materiality measure: it lets a client threshold BEFORE expanding the HOLDS
+          layer rather than discovering the fan-out live. Absent for the ~25% of issuers with no
+          13F coverage. Written by materialize_materiality.py.
 
   Insider:
     unique_key: cik
+    # Default writer for this label's properties; property_writers lists the
+    # exceptions. Machine-checked by scripts/validate_graph_schema.py.
+    written_by: secgraph/ingestion/ownership/insiders.py
     description: "SEC Form 3/4/5 reporting owner (director/officer/10% holder), CIK-keyed at source"
     required_properties:
       cik: {type: String, description: "SEC Central Index Key of the reporting owner (unique key)"}
@@ -119,14 +198,31 @@ nodes:
 
   InstitutionalManager:
     unique_key: cik
+    # Default writer for this label's properties; property_writers lists the
+    # exceptions. Machine-checked by scripts/validate_graph_schema.py.
+    written_by: secgraph/ingestion/ownership/institutional.py
     description: "SEC Form 13F institutional investment manager, CIK-keyed"
     required_properties:
       cik: {type: String, description: "SEC Central Index Key of the 13F filer (unique key)"}
       name: {type: String, description: "Manager name as filed"}
       loaded_at: {type: DateTime, description: "When node was loaded"}
+    optional_properties:
+      holds_count:
+        type: Long
+        description: >
+          Number of distinct issuers this manager reports a position in. A traversal-cost guard,
+          not an analytic measure. HOLDS is 6.7M edges with out-degree p50 220 and a worst case of
+          45,694 on a single manager — expanding that node in an interactive client hangs it, and
+          the client cannot know the cost before paying it. Reading this first makes the fan-out
+          knowable in advance. Written by materialize_materiality.py.
 
   BeneficialOwner:
     unique_key: owner_key
+    # Default writer for this label's properties; property_writers lists the
+    # exceptions. Machine-checked by scripts/validate_graph_schema.py.
+    written_by: secgraph/ingestion/ownership/beneficial.py
+    property_writers:
+      is_custodial: secgraph/ingestion/ownership/cotarget_edges.py
     description: "SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-slug"
     required_properties:
       owner_key: {type: String, description: "CIK if resolvable, else a name-slug (unique key)"}
@@ -135,12 +231,36 @@ nodes:
     optional_properties:
       cik: {type: String, description: "Filer CIK when resolvable from the submission header"}
       resolved: {type: Boolean, description: "True if owner_key is a CIK, False if a name-slug"}
-      is_custodial: {type: Boolean, description: "True for broker/custodian/index hubs that bridge unrelated activists. Labelled (never deleted) so the fact survives; excluded at coalition projection time for precision."}
-      coalition_id: {type: Long, description: "Activist coalition component id (GDS WCC over CO_TARGETS, custodial hubs excluded)"}
+      is_custodial:
+        type: Boolean
+        # Sparse BY DESIGN — 13 of 17,235 filers. Declared so the validator does not report it as
+        # a missing layer: a flag that marks a handful of hubs is doing its job at 0.1%.
+        expected_sparse: true
+        description: >
+          True for broker/custodian/index hubs that bridge unrelated activists. Labelled (never
+          deleted) so the co-filing fact survives; excluded at coalition projection time for
+          precision. Fixing a leak in this scrub once moved a published coalition figure from 22
+          to 16, which is why the exclusion is auditable rather than baked into the data.
+      # REMOVED: coalition_id. It was declared as "Activist coalition component id (GDS WCC over
+      # CO_TARGETS)" but NOTHING wrote it — zero .py references — and the GDS WCC run it described
+      # does not exist. Coalitions are computed by variable-depth Cypher at query time
+      # (graph_native_proof.py::_cypher_largest_coalition) and never persisted. A declared property
+      # that no code produces, attributed to an algorithm the repo does not run, is worse than an
+      # undocumented one: it invites a reader to query something that will always be null. This is
+      # not a truth-in-inclusion deletion — no fact is being discarded, only a false claim.
 
 # ---------------------------------------------------------------------------
 # Relationship types: source → target, required/optional properties
 # ---------------------------------------------------------------------------
+# Every relationship declares `written_by` (the module that creates it) and `source_value` (the
+# literal string its `source` property carries in the graph). Both are machine-checked by
+# scripts/validate_graph_schema.py: `written_by` must name a file that exists, and `source_value`
+# must actually be present on that relationship in the live database. That turns provenance from
+# prose into a test — previously all 40 relationship properties were bare name lists, so a reader
+# could see that a `source` property was declared but never learn what value it holds.
+#
+# `written_by` sits at the relationship level rather than per-property because one module writes
+# every property on a given type; per-property repetition would be noise, not information.
 relationships:
   # --- Filed relationships: straight from SEC forms ---
   DIRECTOR_OF:
@@ -148,6 +268,8 @@ relationships:
     description: "Reporting owner is a director of the issuer (SEC Form 3/4/5)"
     source: Insider
     target: Company
+    written_by: secgraph/ingestion/ownership/insiders.py
+    source_value: sec_form345
     required_properties: [filing_date, source, loaded_at]
     optional_properties: [accession_number, first_seen, last_seen]
 
@@ -156,6 +278,8 @@ relationships:
     description: "Reporting owner is an officer of the issuer (SEC Form 3/4/5)"
     source: Insider
     target: Company
+    written_by: secgraph/ingestion/ownership/insiders.py
+    source_value: sec_form345
     required_properties: [filing_date, source, loaded_at]
     optional_properties: [accession_number, officer_title, first_seen, last_seen]
 
@@ -164,6 +288,8 @@ relationships:
     description: "Reporting owner holds >10% of the issuer (SEC Form 3/4/5)"
     source: Insider
     target: Company
+    written_by: secgraph/ingestion/ownership/insiders.py
+    source_value: sec_form345
     required_properties: [filing_date, source, loaded_at]
     optional_properties: [accession_number, first_seen, last_seen]
 
@@ -173,6 +299,8 @@ relationships:
     description: "Two operating boards share >=1 human director (derived from DIRECTOR_OF; board-interlock edge, stored undirected once with id(a)<id(b))"
     source: Company
     target: Company
+    written_by: secgraph/ingestion/ownership/interlock_edges.py
+    source_value: form345_director_interlock
     required_properties: [director_count, source, computed_at]
     optional_properties: [via_ciks]
 
@@ -181,6 +309,8 @@ relationships:
     description: "Verified >=50% control of the issuer (derived from BENEFICIAL_OWNER_OF 13D edges where control_class='control'; self-filings excluded). Materialized so the transitive control chain is a real variable-depth Cypher traversal rather than a client-side walk; chains continue where a controlled Company's CIK also exists as a BeneficialOwner."
     source: BeneficialOwner
     target: Company
+    written_by: secgraph/ingestion/ownership/control_edges.py
+    source_value: sec13d_verified_control
     required_properties: [percent_of_class, source, computed_at]
     optional_properties: [accession_number, filing_date]
 
@@ -189,6 +319,8 @@ relationships:
     description: "The Company and the BeneficialOwner are the same legal entity, matched on identical CIK (a hard key, never a name match). Purely structural: it lets a control chain continue past an intermediate holding company that both IS controlled and DOES control, so (root)-[:CONTROLS|SAME_ENTITY_AS*]->(target) traverses the full pyramid in Cypher. Carries no ownership semantics of its own."
     source: Company
     target: BeneficialOwner
+    written_by: secgraph/ingestion/ownership/control_edges.py
+    source_value: sec13d_verified_control
     required_properties: [source, computed_at]
     optional_properties: [cik]
 
@@ -211,6 +343,8 @@ relationships:
       Form 3/4/5. Self-filings excluded, as in `CONTROLS`.
     source: BeneficialOwner
     target: Company
+    written_by: secgraph/ingestion/ownership/influence_edges.py
+    source_value: sec13d_influence_tiers
     required_properties: [percent_of_class, tier, source, computed_at]
     optional_properties: [accession_number, filing_date, board_seat, board_seat_last_seen]
 
@@ -219,6 +353,8 @@ relationships:
     description: "Two 13D filers co-target >=2 of the same issuers (derived activist co-targeting edge, stored undirected once with a.cik<b.cik). Substrate for the wolf-pack coalition component; custodial/broker hubs are labelled is_custodial on the node and excluded at projection time rather than deleted."
     source: BeneficialOwner
     target: BeneficialOwner
+    written_by: secgraph/ingestion/ownership/cotarget_edges.py
+    source_value: sec13d_cotargeting
     required_properties: [shared_target_count, source, computed_at]
     optional_properties: [shared_target_ciks]
 
@@ -234,6 +370,8 @@ relationships:
       years-old stakes looked like fresh arrivals).
     source: BeneficialOwner
     target: Company
+    written_by: secgraph/ingestion/ownership/beneficial.py
+    source_value: sec_13dg
     required_properties: [filing_type, filing_date, source, loaded_at]
     # percent_of_class + the control_* / *_voting / pct_* props are written by
     # control_extraction.py onto the >=5% ownership edge (control_class='control' when the
@@ -272,6 +410,8 @@ relationships:
       market-maker books, so the distortion lands hard on specific issuers.
     source: InstitutionalManager
     target: Company
+    written_by: secgraph/ingestion/ownership/institutional.py
+    source_value: sec_form13f
     required_properties: [report_period, filing_date, source, loaded_at]
     optional_properties:
       [
@@ -287,7 +427,11 @@ relationships:
 # Required constraints (UNIQUE)
 # ---------------------------------------------------------------------------
 constraints:
-  - name: unique_company
+  # Named company_cik, not unique_company: this must match what constraints.py:66 actually creates.
+  # The YAML said `unique_company` and the DDL said `company_cik` — a drift that survived because
+  # nothing compared the two until scripts/validate_graph_schema.py existed, which caught it on its
+  # first run. Uniqueness was always enforced; only the declared name was wrong.
+  - name: company_cik
     label: Company
     property: cik
     type: UNIQUENESS
@@ -321,3 +465,16 @@ indexes:
       property: name
     - label: BeneficialOwner
       property: name
+
+  # Full-text over every entity name. This is out-of-the-box Neo4j the repo had coded around:
+  # without it, finding an entity by name is `toLower(n.name) CONTAINS ...`, which full-scans the
+  # label. Two concrete use cases:
+  #   1. Bloom's search bar resolves typed text through a full-text index. Without one, the
+  #      visualization layer has no usable entry point.
+  #   2. Name lookup is how a human enters this graph at all — they know "Monro", not CIK 876427.
+  # One multi-label index rather than four: a searcher does not know in advance whether a name is
+  # an issuer, a filer, a manager or a person, and Bloom's single search box mirrors that.
+  fulltext:
+    - name: entity_name_fulltext
+      labels: [Company, Insider, InstitutionalManager, BeneficialOwner]
+      properties: [name]

@@ -331,6 +331,21 @@ def _steps(
             "Derived — materialize the size measures on Company (assets, 13F float, combined)",
             extra_args=[*db] + (["--replace"] if refresh else []),
         ),
+        # GDS structural features over the SCRUBBED board-interlock graph: betweenness ("which
+        # boards broker between otherwise-unconnected clusters") plus Louvain community with a
+        # stable anchor. Deterministic — concurrency=1 is pinned, because the parallel default
+        # reassigned 52.4% of communities between identical runs.
+        #
+        # Its only hard dependency is DIRECTOR_OF + SHARES_DIRECTOR, both loaded by step 6, so this
+        # could run much earlier. Placing it last is a PREFERENCE, and the reason matters: it keeps
+        # a GDS step that needs the plugin *after* the density gate, so a GDS problem cannot abort
+        # an expensive build before the gate has run. It also groups the derived-property
+        # materializers together.
+        Step(
+            "materialize_interlock_features.py",
+            "Derived — materialize interlock centrality + community on Company (GDS)",
+            extra_args=[*db] + (["--replace"] if refresh else []),
+        ),
     ]
     if refresh:
         return [s for s in plan if not s.build_only]

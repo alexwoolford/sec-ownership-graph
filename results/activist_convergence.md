@@ -1,6 +1,6 @@
 # Activist convergence screen — `secgraph`
 
-*Generated 2026-08-04, read-only. Issuers where two or more recognised activist*
+*Generated 2026-08-05, read-only. Issuers where two or more recognised activist*
 *franchises filed Schedule 13D within a bounded span. Every line is citable to an*
 *SEC accession number.*
 

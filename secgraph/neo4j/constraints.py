@@ -7,7 +7,14 @@ functions here. Unique keys: ``Company.cik``, ``Insider.cik``, ``InstitutionalMa
 ``BeneficialOwner.owner_key`` (a CIK when resolvable, else a name slug).
 
 Every statement uses ``IF NOT EXISTS`` and is safe to re-run. What is declared here must match
-``schema/graph_schema.yaml`` — ``tests/unit/test_schema_consistency.py`` enforces that.
+``schema/graph_schema.yaml``'s ``constraints:`` and ``indexes:`` blocks — the DDL is mirrored BY
+HAND, so a new constraint or index has to be added in both places.
+
+**What enforces that:** ``scripts/validate_graph_schema.py``, which reads the YAML and checks the
+live database for every declared constraint and index. It caught a real drift on its first run: the
+YAML declared the Company key constraint as ``unique_company`` while this file creates it as
+``company_cik``. (``tests/unit/test_schema_consistency.py`` does *not* cover this — it scans ``.py``
+source for undeclared label and relationship-type names, and never looks at DDL.)
 """
 
 import logging
@@ -117,6 +124,18 @@ def create_ownership_constraints(
         (
             "CREATE INDEX boo_control_class IF NOT EXISTS "
             "FOR ()-[r:BENEFICIAL_OWNER_OF]-() ON (r.control_class)"
+        ),
+        # Full-text over every entity name — see the `indexes.fulltext` block in
+        # schema/graph_schema.yaml, which this mirrors BY HAND (the DDL is not generated from the
+        # YAML, so a new index must be added in both places or neither).
+        #
+        # The range indexes above serve exact lookups; they cannot serve the fuzzy, don't-know-the-
+        # label search a human actually performs, and Bloom's search bar requires a full-text index
+        # to resolve typed text at all. One index across four labels because a searcher does not
+        # know in advance whether "Icahn" is a filer, a person or a company.
+        (
+            "CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS "
+            "FOR (n:Company|Insider|InstitutionalManager|BeneficialOwner) ON EACH [n.name]"
         ),
     ]
     _run_constraints(driver, constraints, database=database, log=logger)
