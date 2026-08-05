@@ -91,7 +91,10 @@ def _component_stats(driver, database: str | None, universe_count: int) -> dict:
             MATCH (c:Company)
             WHERE c.ownership_component IS NOT NULL
             WITH c.ownership_component AS comp, count(*) AS size
-            RETURN comp, size ORDER BY size DESC
+            // Tie-break on comp: with `ORDER BY size DESC` alone, two equal-largest components
+            // made "the giant component" an arbitrary pick, and _path_distribution then sampled
+            // a different component run to run.
+            RETURN comp, size ORDER BY size DESC, comp ASC
             """
         ).data()
     if not rows:
@@ -117,12 +120,19 @@ def _component_stats(driver, database: str | None, universe_count: int) -> dict:
 def _path_distribution(
     driver, database: str | None, comp_id, sample_pairs: int, log: logging.Logger
 ) -> dict:
-    """Shortest-path hop histogram over sampled pairs in the giant component."""
+    """Shortest-path hop histogram over sampled pairs in the giant component.
+
+    The sample is ordered by ``c.cik`` rather than ``rand()``. It was unseeded random, which
+    made the gate itself nondeterministic: the same graph could PASS one run and FAIL the next,
+    and the published hop histogram was a stochastic artifact reported as a measurement. CIK
+    order is arbitrary with respect to connectivity but stable across runs, which is what a
+    GO/NO-GO decision needs.
+    """
     with driver.session(database=database) as session:
         result = session.run(
             """
             MATCH (c:Company {ownership_component: $comp})
-            WITH c ORDER BY rand() LIMIT $limit
+            WITH c ORDER BY c.cik LIMIT $limit
             WITH collect(c) AS nodes
             UNWIND range(0, size(nodes) - 1) AS i
             UNWIND range(i + 1, size(nodes) - 1) AS j

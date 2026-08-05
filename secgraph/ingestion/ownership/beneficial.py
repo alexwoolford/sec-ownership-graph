@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from pathlib import Path
 
 from secgraph.core.config.constants import BATCH_SIZE_LARGE
@@ -25,6 +27,7 @@ from secgraph.ingestion.ownership.bulk_datasets import (
     normalize_cik,
 )
 from secgraph.ingestion.ownership.edgar_client import (
+    SubmissionsFetchError,
     fetch_13dg_accessions,
     fetch_submission_header,
 )
@@ -32,12 +35,31 @@ from secgraph.neo4j.utils import clean_properties_batch
 
 logger = logging.getLogger(__name__)
 
+# Fraction of subjects that may fail to fetch before the crawl is treated as systemically
+# blocked rather than unlucky. Isolated blips over ~65k requests are normal; a fifth of the
+# universe failing means something is wrong (usually SEC 403-ing a placeholder User-Agent),
+# and continuing would write a plausible-looking but silently incomplete graph.
+_MAX_SUBJECT_FAILURE_PCT = 20.0
+
 # The header is organized in blocks: "SUBJECT COMPANY:" then "FILED BY:".
 # Within each block, CENTRAL INDEX KEY / COMPANY CONFORMED NAME are indented.
 _CIK_RE = re.compile(r"CENTRAL INDEX KEY:\s*(\d+)")
 _NAME_RE = re.compile(r"COMPANY CONFORMED NAME:\s*(.+)")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+# One edge per (owner, company, filing_type) — so a filer's whole 13D history on one issuer
+# collapses into a single edge. What that edge *reports* therefore matters a great deal.
+#
+# It used to overwrite filing_date/accession_number on every MERGE, leaving whichever filing the
+# crawler happened to write last. That manufactured false convergences: Herc Holdings showed
+# GAMCO and Icahn "arriving" 46 days apart in 2022/2023 when both positions actually date to
+# 2016 and 2021 — the printed dates were amendments to years-old stakes. For a demo whose central
+# claim is "who moved first", that is the worst possible field to get wrong.
+#
+# Now: `filing_date` tracks the EARLIEST ORIGINAL (non-/A) filing, which is when the position was
+# actually disclosed, with `accession_number` kept in step so the citation matches the date.
+# `first_seen`/`last_seen` retain the full observed span, and `amendment_count` shows how much
+# history the edge is standing in for. Mirrors the CASE idiom in insiders.py.
 _MERGE_QUERY = """
     UNWIND $batch AS row
     MATCH (c:Company {cik: row.company_cik})
@@ -47,10 +69,39 @@ _MERGE_QUERY = """
         b.cik = row.owner_cik,
         b.resolved = row.resolved
     MERGE (b)-[r:BENEFICIAL_OWNER_OF {filing_type: row.filing_type}]->(c)
+      ON CREATE SET r.loaded_at = datetime()
     SET r.source = 'sec_13dg',
-        r.filing_date = date(row.filing_date),
-        r.accession_number = row.accession_number,
-        r.loaded_at = datetime()
+        r.first_seen = CASE
+              WHEN r.first_seen IS NULL OR date(row.filing_date) < r.first_seen
+              THEN date(row.filing_date) ELSE r.first_seen END,
+        r.last_seen = CASE
+              WHEN r.last_seen IS NULL OR date(row.filing_date) > r.last_seen
+              THEN date(row.filing_date) ELSE r.last_seen END,
+        r.amendment_count = coalesce(r.amendment_count, 0)
+              + CASE WHEN row.is_amendment THEN 1 ELSE 0 END,
+        // Originals win outright over amendments; among originals, the earliest wins. An
+        // amendment only sets the date when no original has been seen for this pair at all.
+        r.filing_is_original = CASE
+              WHEN NOT row.is_amendment THEN true
+              ELSE coalesce(r.filing_is_original, false) END,
+        r.accession_number = CASE
+              WHEN r.accession_number IS NULL THEN row.accession_number
+              WHEN NOT row.is_amendment AND NOT coalesce(r.filing_is_original, false)
+                   THEN row.accession_number
+              WHEN NOT row.is_amendment AND date(row.filing_date) < r.filing_date
+                   THEN row.accession_number
+              WHEN coalesce(r.filing_is_original, false) THEN r.accession_number
+              WHEN date(row.filing_date) < r.filing_date THEN row.accession_number
+              ELSE r.accession_number END,
+        r.filing_date = CASE
+              WHEN r.filing_date IS NULL THEN date(row.filing_date)
+              WHEN NOT row.is_amendment AND NOT coalesce(r.filing_is_original, false)
+                   THEN date(row.filing_date)
+              WHEN NOT row.is_amendment AND date(row.filing_date) < r.filing_date
+                   THEN date(row.filing_date)
+              WHEN coalesce(r.filing_is_original, false) THEN r.filing_date
+              WHEN date(row.filing_date) < r.filing_date THEN date(row.filing_date)
+              ELSE r.filing_date END
     RETURN count(r) AS n
 """
 
@@ -105,12 +156,76 @@ def _classify_filing(form_type: str) -> str:
     return "13D" if "13D" in form_type.upper() else "13G"
 
 
+def is_amendment(form_type: str) -> bool:
+    """True for a ``/A`` amendment rather than an original filing.
+
+    Load-bearing in two places, and previously thrown away by :func:`_classify_filing`:
+
+    - **Percent validation.** An original 13D cannot report below 5% (Section 13(d) is
+      triggered by crossing 5%), so a sub-5% figure there is a parse error. A 13D/A *can* —
+      it is how an exit is reported. Half of the sub-5% figures in the graph were legitimate
+      amendment exits, so blanket-rejecting them would have destroyed real data.
+    - **First-mover dates.** "Who moved first" must anchor on an original. Amendments to a
+      position held for years otherwise masquerade as fresh arrivals.
+    """
+    return form_type.upper().rstrip().endswith("/A")
+
+
+def filings_as_of(filings: list[dict], as_of: str | None) -> list[dict]:
+    """Drop filings dated after ``as_of`` (a ``YYYY-MM-DD`` string).
+
+    Applied *before* the per-subject cap, not after: filtering a list that has already been
+    truncated to the 40 most recent would silently return fewer than 40 filings for any active
+    subject, so a pinned rebuild would see less history than an unpinned one.
+
+    A filing with a missing or malformed date is kept — dropping it would lose a real edge over
+    a formatting quirk, and ``parse_header`` supplies the authoritative date downstream.
+    """
+    if not as_of:
+        return filings
+    kept = []
+    for filing in filings:
+        raw = (filing.get("date") or "").strip()
+        try:
+            # Parse rather than compare strings: "not-a-date" is also 10 characters, so a
+            # length check would treat it as a real date and silently drop the filing.
+            parsed = date.fromisoformat(raw)
+        except ValueError:
+            kept.append(filing)
+            continue
+        if parsed.isoformat() <= as_of:
+            kept.append(filing)
+    return kept
+
+
+def prioritize_originals(filings: list[dict], limit: int) -> list[dict]:
+    """Take ``limit`` filings, preferring ORIGINALS over amendments.
+
+    The cap exists to bound crawl cost, but taking the newest N is the wrong slice for the
+    demo's central claim. EDGAR returns newest-first, so on a heavily-amended subject the
+    window fills with ``/A`` filings and the originals fall off the end: Herc Holdings has 54
+    13D-family filings of which only 3 are originals (2014, 2014, 2016), all outside a
+    newest-40 window. The first-mover date then reported an amendment to a years-old position
+    as a fresh arrival — a manufactured convergence.
+
+    Originals first (oldest first, since the earliest is the disclosure that matters), then
+    the newest amendments to fill the remaining budget so recent activity is still visible.
+    """
+    if limit <= 0:
+        return []
+    originals = [f for f in filings if not is_amendment(f.get("form", ""))]
+    amendments = [f for f in filings if is_amendment(f.get("form", ""))]
+    originals.sort(key=lambda f: f.get("date") or "")
+    return (originals + amendments)[:limit]
+
+
 def _crawl_subject(
     subject_cik: str,
     cache_dir: Path,
     refresh_index: bool,
     refresh_headers: bool,
     max_filings_per_subject: int,
+    as_of: str | None = None,
 ) -> list[dict]:
     """Crawl one subject's 13D/G headers → its BENEFICIAL_OWNER_OF edge rows.
 
@@ -122,11 +237,12 @@ def _crawl_subject(
     a filter change, e.g. picking up the new ``SCHEDULE 13D/G`` form codes);
     ``refresh_headers`` re-fetches the SGML headers, which are immutable by
     accession and so almost never need refreshing — newly-discovered accessions
-    are fetched regardless.
+    are fetched regardless. ``as_of`` pins the crawl to filings on or before a date.
     """
     filings = fetch_13dg_accessions(subject_cik, cache_dir, refresh=refresh_index)
+    filings = filings_as_of(filings, as_of)
     rows: list[dict] = []
-    for filing in filings[:max_filings_per_subject]:
+    for filing in prioritize_originals(filings, max_filings_per_subject):
         header = fetch_submission_header(
             subject_cik, filing["accession"], cache_dir, refresh=refresh_headers
         )
@@ -147,6 +263,8 @@ def _crawl_subject(
                 "resolved": resolved,
                 "company_cik": parsed["subject_cik"],
                 "filing_type": _classify_filing(parsed["form_type"]),
+                "form_type": parsed["form_type"],
+                "is_amendment": is_amendment(parsed["form_type"]),
                 "filing_date": parsed["filing_date"] or filing["date"],
                 "accession_number": filing["accession"],
             }
@@ -175,6 +293,9 @@ def build_edge_rows(
     refresh: bool = False,
     refresh_headers: bool = False,
     max_filings_per_subject: int = 40,
+    as_of: str | None = None,
+    on_batch: Callable[[list[dict]], None] | None = None,
+    checkpoint_every: int = 250,
     log: logging.Logger | None = None,
 ) -> list[dict]:
     """Crawl 13D/G headers for each subject → BENEFICIAL_OWNER_OF edge rows.
@@ -189,27 +310,82 @@ def build_edge_rows(
     requests; needed after a form-code/filter change). ``refresh_headers`` also
     re-fetches every cached SGML header — rarely needed, since headers are
     immutable by accession; newly-discovered accessions are always fetched.
+
+    ``on_batch`` is called with accumulated rows every ``checkpoint_every`` subjects. Without
+    it every row is held until the crawl finishes, so a crash at 95% loses the DB write for
+    the whole run even though the fetch cache survives — which is exactly what happened on a
+    home-internet drop at subject 3,500 of 8,000. Rows handed to ``on_batch`` are not
+    returned again; the MERGE is idempotent, so a partial run is safe to resume.
     """
     log = log or logger
     cache_dir = get_ownership_data_dir("form13dg")
     workers = _crawl_workers()
     total = len(subject_ciks)
     log.info(f"  crawling {total:,} subjects with {workers} concurrent workers...")
+    if on_batch is not None:
+        log.info(f"  checkpointing to the database every {checkpoint_every:,} subjects")
 
     rows: list[dict] = []
+    pending: list[dict] = []
+    flushed = 0
     done = 0
+    failed: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
-                _crawl_subject, cik, cache_dir, refresh, refresh_headers, max_filings_per_subject
+                _crawl_subject,
+                cik,
+                cache_dir,
+                refresh,
+                refresh_headers,
+                max_filings_per_subject,
+                as_of,
             ): cik
             for cik in subject_ciks
         }
         for future in as_completed(futures):
-            rows.extend(future.result())
+            try:
+                got = future.result()
+                pending.extend(got) if on_batch is not None else rows.extend(got)
+            except SubmissionsFetchError as exc:
+                # Tolerate isolated failures (one unreachable subject must not lose a
+                # multi-hour crawl) but never silently: they are counted, and a systemic
+                # rate — e.g. SEC 403-ing every request over a placeholder User-Agent — is
+                # fatal below. Nothing was cached, so a re-run retries these subjects.
+                failed.append(futures[future])
+                log.debug(f"  subject fetch failed: {exc}")
+            except Exception as exc:  # noqa: BLE001 - see below
+                # Catch-all on purpose. Anything escaping a worker propagates through
+                # .result() and kills the entire crawl; an http.client.IncompleteRead from a
+                # dropped connection did exactly that. Losing one subject is recoverable —
+                # losing hours of throttled fetching is not.
+                failed.append(futures[future])
+                log.debug(f"  subject crawl error ({type(exc).__name__}): {exc}")
             done += 1
+            if on_batch is not None and done % checkpoint_every == 0 and pending:
+                on_batch(pending)
+                flushed += len(pending)
+                pending = []
             if done % 250 == 0:
-                log.info(f"  crawled {done:,}/{total:,} subjects, {len(rows):,} edges so far")
+                seen = flushed + len(pending) if on_batch is not None else len(rows)
+                log.info(f"  crawled {done:,}/{total:,} subjects, {seen:,} edges so far")
+
+    if on_batch is not None and pending:
+        on_batch(pending)
+        flushed += len(pending)
+
+    if failed:
+        pct = 100.0 * len(failed) / total if total else 0.0
+        log.warning(f"  ⚠ {len(failed):,}/{total:,} subjects ({pct:.1f}%) could not be fetched")
+        # A handful of blips is normal over ~65k requests; a large fraction means the crawl is
+        # systematically blocked, and continuing would write a plausible-looking partial graph.
+        if pct >= _MAX_SUBJECT_FAILURE_PCT:
+            raise SubmissionsFetchError(
+                f"{len(failed):,}/{total:,} subjects ({pct:.1f}%) failed to fetch — aborting "
+                f"rather than building a silently-incomplete graph. Most likely cause: SEC is "
+                f"rejecting the requests. Set a real SEC_USER_AGENT "
+                f"('Name email@domain') and re-run; nothing was cached, so the retry is clean."
+            )
     return rows
 
 
@@ -221,6 +397,7 @@ def load_beneficial_owners(
     refresh_headers: bool = False,
     max_filings_per_subject: int = 40,
     batch_size: int = BATCH_SIZE_LARGE,
+    as_of: str | None = None,
     execute: bool = False,
     logger_instance: logging.Logger | None = None,
 ) -> dict:
@@ -249,41 +426,79 @@ def load_beneficial_owners(
             subject_ciks = [r["cik"] for r in session.run("MATCH (c:Company) RETURN c.cik AS cik")]
     log.info(f"Crawling 13D/13G headers for {len(subject_ciks):,} subject companies...")
 
+    # Under --execute, write to Neo4j as the crawl proceeds instead of holding every row until
+    # the end. A multi-hour crawl on a home connection *will* be interrupted; the fetch cache
+    # made a re-run cheap, but the DB write was all-or-nothing, so a drop at 95% wrote nothing.
+    stats = {"owners": 0, "edges": 0, "checkpoints": 0}
+    seen_owners: set[str] = set()
+    resolved_count = 0
+    total_rows = 0
+
+    def flush(batch_rows: list[dict]) -> None:
+        nonlocal resolved_count, total_rows
+        seen_owners.update(r["owner_key"] for r in batch_rows)
+        resolved_count += sum(1 for r in batch_rows if r["resolved"])
+        total_rows += len(batch_rows)
+        with driver.session(database=database) as session:
+            for start in range(0, len(batch_rows), batch_size):
+                chunk = clean_properties_batch(batch_rows[start : start + batch_size])
+                stats["edges"] += session.run(_MERGE_QUERY, batch=chunk).single()["n"]
+        stats["checkpoints"] += 1
+        log.info(f"    ✓ checkpoint {stats['checkpoints']}: {stats['edges']:,} edges written")
+
     rows = build_edge_rows(
         subject_ciks,
         refresh=refresh,
         refresh_headers=refresh_headers,
         max_filings_per_subject=max_filings_per_subject,
+        as_of=as_of,
+        on_batch=flush if execute else None,
         log=log,
     )
+
+    if execute:
+        if subject_ciks and total_rows == 0:
+            raise SubmissionsFetchError(
+                f"crawled {len(subject_ciks):,} subjects and found 0 Schedule 13D/13G edges. "
+                f"This is never a valid outcome for a real universe. Check that SEC_USER_AGENT "
+                f"is a real contact string, and that data/sec_ownership/form13dg/ does not hold "
+                f"empty cached indexes from an earlier blocked run (delete it to re-crawl)."
+            )
+        resolution_rate = round(resolved_count / total_rows * 100, 1) if total_rows else 0.0
+        log.info(
+            f"✓ Loaded {len(seen_owners):,} beneficial owners, {stats['edges']:,} edges "
+            f"across {stats['checkpoints']} checkpoint(s), filer resolution {resolution_rate}%"
+        )
+        return {
+            "owners": len(seen_owners),
+            "edges": stats["edges"],
+            "resolution_rate_pct": resolution_rate,
+        }
+
+    if subject_ciks and not rows:
+        # Every 13D/G-driven demo surface (convergence, coalition, control chains) depends on
+        # this layer. Zero edges across the whole universe is never a legitimate result, but it
+        # used to exit 0 and let the build finish "successfully" over an empty graph.
+        raise SubmissionsFetchError(
+            f"crawled {len(subject_ciks):,} subjects and found 0 Schedule 13D/13G edges. "
+            f"This is never a valid outcome for a real universe. Check that SEC_USER_AGENT is "
+            f"a real contact string, and that data/sec_ownership/form13dg/ does not hold "
+            f"empty cached indexes from an earlier blocked run (delete it to force a re-crawl)."
+        )
+
     distinct_owners = len({r["owner_key"] for r in rows})
     resolved = sum(1 for r in rows if r["resolved"])
     resolution_rate = round(resolved / len(rows) * 100, 1) if rows else 0.0
     log.info(
         f"  {len(rows):,} edges, {distinct_owners:,} owners, filer resolution {resolution_rate}%"
     )
-
-    if not execute:
-        log.info("")
-        log.info("DRY RUN — would MERGE BeneficialOwner nodes + BENEFICIAL_OWNER_OF edges:")
-        log.info(f"  owners: {distinct_owners:,}, edges: {len(rows):,}")
-        log.info("Run with --execute to load.")
-        return {
-            "dry_run": True,
-            "owners": distinct_owners,
-            "edges": len(rows),
-            "resolution_rate_pct": resolution_rate,
-        }
-
-    written = 0
-    with driver.session(database=database) as session:
-        for start in range(0, len(rows), batch_size):
-            batch = clean_properties_batch(rows[start : start + batch_size])
-            written += session.run(_MERGE_QUERY, batch=batch).single()["n"]
-
-    log.info(f"✓ Loaded {distinct_owners:,} beneficial owners, {written:,} edges")
+    log.info("")
+    log.info("DRY RUN — would MERGE BeneficialOwner nodes + BENEFICIAL_OWNER_OF edges:")
+    log.info(f"  owners: {distinct_owners:,}, edges: {len(rows):,}")
+    log.info("Run with --execute to load.")
     return {
+        "dry_run": True,
         "owners": distinct_owners,
-        "edges": written,
+        "edges": len(rows),
         "resolution_rate_pct": resolution_rate,
     }

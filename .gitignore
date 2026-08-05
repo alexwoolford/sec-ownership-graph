@@ -5,8 +5,15 @@
 
 # Local AI-agent config and session state (machine-specific, may contain local paths).
 .claude/
-.cursor/
+# Ignore .cursor contents, but ship the portable project MCP config.
+.cursor/*
+!.cursor/mcp.json
 .aider*
+
+# Working scratch space for reference material — papers, vendor docs, market research — that
+# informs the work but is not part of it. Third-party content and licensing make it unsafe to
+# publish from a repo this open, so it stays local by construction.
+context/
 
 # Python
 __pycache__/

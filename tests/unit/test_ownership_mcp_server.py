@@ -24,6 +24,7 @@ from secgraph.mcp.ownership_server import (  # noqa: E402
 )
 
 _EXPECTED_TOOLS = {
+    "influence_map",
     "activist_convergence",
     "campaign_timeline",
     "control_chain",
@@ -33,9 +34,10 @@ _EXPECTED_TOOLS = {
     "get_secgraph_schema",
 }
 
-# The timing/coalition tools must be offered before the supporting ones: tool order shapes which
-# tool an agent reaches for, and leading with control_chain sends it to a micro-cap-only screen.
-_PRIMARY_TOOLS_FIRST = ["activist_convergence", "campaign_timeline"]
+# Tool order shapes which tool an agent reaches for. influence_map leads because it is the
+# strongest single output: a stake AND a current board seat, corroborated by two independent
+# filing types. The timing questions follow — they are what an event-driven desk asks next.
+_PRIMARY_TOOLS_FIRST = ["influence_map", "activist_convergence", "campaign_timeline"]
 
 
 def _tools(server):
@@ -61,7 +63,7 @@ def test_refuses_writable_configuration():
         create_ownership_mcp_server(MagicMock(), read_only=False)
 
 
-def test_timing_tools_are_offered_first():
+def test_primary_tools_are_offered_first():
     server = create_ownership_mcp_server(MagicMock(), read_only=True)
     names = list(_tools(server).keys())
     assert names[: len(_PRIMARY_TOOLS_FIRST)] == _PRIMARY_TOOLS_FIRST
@@ -72,9 +74,32 @@ def test_schema_declares_the_material_limits():
     from secgraph.mcp.ownership_server import _SECGRAPH_SCHEMA
 
     limits = _SECGRAPH_SCHEMA["honest_limits"]
-    assert "market-cap" in limits  # no materiality ranking is possible
+    # Size is now available but only as a proxy. Each caveat must survive, because an agent
+    # that reads "size" without them will over-trust the figure: it is free-float-based, has a
+    # ~25% coverage hole, and is not a market cap.
+    assert "PROXY" in limits
+    assert "free float" in limits
+    assert "25%" in limits
+    assert "market cap" in limits
     assert "franchise" in limits  # activist screens trade recall for precision
     assert "4 hops" in limits  # interlock existence is not informative
+
+
+def test_control_chain_is_not_described_as_small_cap_only():
+    """Regression guard on an agent-facing correctness bug.
+
+    The tool catalog and the control_chain docstring both used to assert the verified chains were
+    "all micro/nano-cap", which told an agent to deprioritize a tool that returns Deutsche
+    Telekom's 74.3% of T-Mobile US. 20 of 825 controlled issuers carry >=$10B. The caveat is
+    true of the MULTI-HOP pyramids only, and must stay scoped to them.
+    """
+    from secgraph.mcp.ownership_server import _SECGRAPH_SCHEMA
+
+    catalog = " ".join(_SECGRAPH_SCHEMA["curated_tools"])
+    assert "control_chain — PRIMARY" in catalog
+    assert "micro/nano-cap issuers, so treat this as a small-cap" not in catalog
+    # The surviving caveat must be attached to depth, not to control generally.
+    assert "MULTI-HOP" in catalog
 
 
 def test_envelope_accepts_a_custom_renderer():

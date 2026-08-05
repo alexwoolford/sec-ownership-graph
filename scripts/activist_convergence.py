@@ -33,7 +33,9 @@ from secgraph.ingestion.ownership.campaign_timeline import (
     DEFAULT_MIN_ACTIVISTS,
     DEFAULT_WINDOW_DAYS,
     CampaignTimelineEngine,
+    format_institutional_value,
 )
+from secgraph.ingestion.ownership.pipeline import provenance_line
 
 
 def render_markdown(scan, timelines: list, generated: str) -> str:
@@ -42,8 +44,14 @@ def render_markdown(scan, timelines: list, generated: str) -> str:
         "# Activist convergence screen — `secgraph`",
         "",
         f"*Generated {generated}, read-only. Issuers where two or more recognised activist*",
-        "*franchises filed Schedule 13D inside a rolling window. Every line is citable to an*",
+        "*franchises filed Schedule 13D within a bounded span. Every line is citable to an*",
         "*SEC accession number.*",
+        "",
+        provenance_line(),
+        "",
+        "> **How to read the span.** The window is measured first-to-last filing, not rolling, so",
+        "> a *third* franchise filing later can push an issuer's span past the limit and drop it",
+        "> off this screen. New data can therefore remove a hit as well as add one.",
         "",
     ]
     if scan.abstained:
@@ -56,6 +64,7 @@ def render_markdown(scan, timelines: list, generated: str) -> str:
         lines.append(
             f"## {c['ticker'] or c['cik']} — {c['name']}"
             f" · {h['franchise_count']} franchises within {h['span_days']} days"
+            f"{format_institutional_value(c.get('institutional_value_usd'))}"
         )
         lines.append("")
         lines.append("| Date | Filer | % of class | Accession |")

@@ -1,7 +1,7 @@
 # Public Company Graph — Schema Reference
 
 > **Auto-generated** from `schema/graph_schema.yaml`.
-> Last generated: 2026-08-03 04:43 UTC
+> Last generated: 2026-08-04 23:54 UTC
 >
 > Do **not** edit this file by hand. Run:
 > ```bash
@@ -12,7 +12,7 @@
 
 ### Company
 
-A public issuer that files with the SEC. The universe is SEC filers with a ticker (see scripts/load_company_universe.py); every ownership edge attaches to one of these. NOTE: this graph carries no market-cap, revenue or financial data — results cannot be ranked by materiality. See docs/reference_architecture_secgraph.md "Honest limits".
+A public issuer that files with the SEC. The universe is SEC filers with a ticker (see scripts/load_company_universe.py); every ownership edge attaches to one of these. NOTE: no revenue, assets or true market cap. `institutional_value_usd` is a size PROXY derived from 13F holdings (see that property) and is absent for ~25% of the universe. See docs/reference_architecture_secgraph.md "Honest limits".
 
 
 - **Unique key:** `cik`
@@ -34,6 +34,10 @@ A public issuer that files with the SEC. The universe is SEC filers with a ticke
 | `sic_code` | String | SIC industry code (from EDGAR) |
 | `state_of_incorp` | String | State/country of incorporation (from EDGAR) |
 | `ownership_component` | Long | WCC component id over the ownership-interlock graph (GDS) |
+| `institutional_value_usd` | Float | Size PROXY, not a market cap: total 13F-reported institutional dollars in this issuer for one quarter (sum of HOLDS.value_usd). Exists so structural results can be ranked by materiality — a $95B control relationship and a $30 one are not the same finding. Three limits, all load-bearing: (1) ABSENT for ~25% of the universe (no 13F coverage), and a null means "not institutionally held", never zero; (2) measures FREE FLOAT, so it understates exactly the concentrated-ownership issuers control chains are about — conservative, never a false positive; (3) ETFs are in the universe and 13F filers report them, so SPY/QQQ rank high on other people's money. Written by materialize_materiality.py.
+ |
+| `institutional_value_period` | Date | The 13F report_period institutional_value_usd was summed over. Required for auditability: the figure is one quarter's snapshot, not a running total, and 13F has a 2024 coverage step-up — so the period must travel with the number.
+ |
 
 ### Insider
 
@@ -96,9 +100,12 @@ SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-sl
 | `SHARES_DIRECTOR` | `(Company)-[:SHARES_DIRECTOR]->(Company)` | Two operating boards share >=1 human director (derived from DIRECTOR_OF; board-interlock edge, stored undirected once with id(a)<id(b)) |
 | `CONTROLS` | `(BeneficialOwner)-[:CONTROLS]->(Company)` | Verified >=50% control of the issuer (derived from BENEFICIAL_OWNER_OF 13D edges where control_class='control'; self-filings excluded). Materialized so the transitive control chain is a real variable-depth Cypher traversal rather than a client-side walk; chains continue where a controlled Company's CIK also exists as a BeneficialOwner. |
 | `SAME_ENTITY_AS` | `(Company)-[:SAME_ENTITY_AS]->(BeneficialOwner)` | The Company and the BeneficialOwner are the same legal entity, matched on identical CIK (a hard key, never a name match). Purely structural: it lets a control chain continue past an intermediate holding company that both IS controlled and DOES control, so (root)-[:CONTROLS|SAME_ENTITY_AS*]->(target) traverses the full pyramid in Cypher. Carries no ownership semantics of its own. |
+| `INFLUENCES` | `(BeneficialOwner)-[:INFLUENCES]->(Company)` | A 13D stake at or above a Federal Reserve control-presumption tier (12 CFR 225.2(e)): 10 / 15 / 25 / 50 percent. DELIBERATELY SEPARATE FROM `CONTROLS`, which stays at >=50% so that "control" keeps meaning control — a 25% holder has influence, blocking rights and often a board designee, but not control, and relabelling it invites a correct objection. Exists because a >=50% single stake is structurally anti-selected for large caps: an issuer with a majority holder has little float, so the >=50% set was finding illiquidity as much as control. Median issuer size rises monotonically as the tier falls, and at 25% the set includes Berkshire, Walmart, Charter and Ferrari. CAVEAT that must travel with it: `percent_of_class` is percent of the class covered by the filing, NOT voting power. Several of the largest names here are dual-class (Berkshire, the Liberty complex, Carvana, Sea), where economic and voting stakes diverge — so the 25%-of- voting test cannot be evaluated cleanly from this data. `board_seat` is the second, independent limb of 225.2(e): true when the same CIK also currently sits on the board via Form 3/4/5. Self-filings excluded, as in `CONTROLS`.
+ |
 | `CO_TARGETS` | `(BeneficialOwner)-[:CO_TARGETS]->(BeneficialOwner)` | Two 13D filers co-target >=2 of the same issuers (derived activist co-targeting edge, stored undirected once with a.cik<b.cik). Substrate for the wolf-pack coalition component; custodial/broker hubs are labelled is_custodial on the node and excluded at projection time rather than deleted. |
-| `BENEFICIAL_OWNER_OF` | `(BeneficialOwner)-[:BENEFICIAL_OWNER_OF]->(Company)` | >5% beneficial owner of the issuer (SEC Schedule 13D/13G) |
-| `HOLDS` | `(InstitutionalManager)-[:HOLDS]->(Company)` | 13F reported holding of the issuer by an institutional manager, keyed by report_period so each quarter is a distinct edge (a position time series, not a latest-only snapshot). Slice/compare quarter-over-quarter on report_period to see accumulation/trimming.
+| `BENEFICIAL_OWNER_OF` | `(BeneficialOwner)-[:BENEFICIAL_OWNER_OF]->(Company)` | >5% beneficial owner of the issuer (SEC Schedule 13D/13G). ONE edge per (owner, company, filing_type), so a filer's whole 13D history on an issuer collapses here. filing_date/accession_number therefore report the EARLIEST ORIGINAL (non-/A) filing — when the position was actually disclosed — while first_seen/last_seen keep the full observed span and amendment_count shows how much history the edge stands in for. Reporting the last-written filing instead manufactured false convergences (amendments to years-old stakes looked like fresh arrivals).
+ |
+| `HOLDS` | `(InstitutionalManager)-[:HOLDS]->(Company)` | 13F reported holding of the issuer by an institutional manager, keyed by report_period so each quarter is a distinct edge (a position time series, not a latest-only snapshot). Slice/compare quarter-over-quarter on report_period to see accumulation/trimming. IMPORTANT: value_usd/shares are SHARE OWNERSHIP only. 13F also reports option positions, and their notional is carried separately in call_notional_usd / put_notional_usd — an option is a position, not a stake. Conflating them (reading VALUE without PUTCALL) made a market maker holding 67 shares of Eversource look like its largest owner at $18.68B. Roughly 7% of all reported 13F dollars are options, concentrated in market-maker books, so the distortion lands hard on specific issuers.
  |
 
 ### Relationship Properties
@@ -145,6 +152,13 @@ SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-sl
 - **Required:** `source`, `computed_at`
 - **Optional:** `cik`
 
+#### INFLUENCES
+
+`(BeneficialOwner)-[:INFLUENCES]->(Company)`
+
+- **Required:** `percent_of_class`, `tier`, `source`, `computed_at`
+- **Optional:** `accession_number`, `filing_date`, `board_seat`, `board_seat_last_seen`
+
 #### CO_TARGETS
 
 `(BeneficialOwner)-[:CO_TARGETS]->(BeneficialOwner)`
@@ -157,14 +171,14 @@ SEC Schedule 13D/13G >5% beneficial owner (filer); CIK if resolved, else name-sl
 `(BeneficialOwner)-[:BENEFICIAL_OWNER_OF]->(Company)`
 
 - **Required:** `filing_type`, `filing_date`, `source`, `loaded_at`
-- **Optional:** `percent_of_class`, `accession_number`, `control_class`, `sole_voting`, `shared_voting`, `pct_verified`, `control_extracted_at`
+- **Optional:** `percent_of_class`, `accession_number`, `control_class`, `sole_voting`, `shared_voting`, `pct_verified`, `pct_source`, `control_extracted_at`, `first_seen`, `last_seen`, `amendment_count`, `filing_is_original`
 
 #### HOLDS
 
 `(InstitutionalManager)-[:HOLDS]->(Company)`
 
 - **Required:** `report_period`, `filing_date`, `source`, `loaded_at`
-- **Optional:** `value_usd`, `shares`, `cusip`, `accession_number`
+- **Optional:** `value_usd`, `shares`, `call_notional_usd`, `put_notional_usd`, `cusip`, `accession_number`
 
 ## Constraints
 

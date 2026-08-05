@@ -29,7 +29,7 @@ materialized derived edges — not as a flat `SELECT` plus a client-side Python 
 distinction is load-bearing: a client-side walk is exactly what a warehouse reproduces, so it
 would have made the claim unearned. The Python adjacency walkers retained in
 `graph_native_proof.py` are deliberately the **flat-SQL side** of the head-to-head, and the two
-implementations are cross-checked (they agree: 11 chains / 16-member coalition).
+implementations are cross-checked (they agree: 22 chains / 25-member coalition).
 
 **The claim, stated precisely.** SQL cannot express *a single query* whose traversal depth is
 decided by the data. A warehouse can still reach the same answers via a recursive CTE or
@@ -115,7 +115,7 @@ Drop into Claude Desktop / this project via [`.mcp.json`](../.mcp.json).
 ## Tool catalog (what a finance pro asks)
 
 Ordered by demo value — the timing and coalition questions are what an event-driven desk asks;
-the rest is supporting context. See [`docs/demo_script_activist_desk.md`](demo_script_activist_desk.md)
+the rest is supporting context. See [`docs/demo_script_governance_desk.md`](demo_script_governance_desk.md)
 for the scripted walkthrough.
 
 | Tool | Ask it | Returns |
@@ -130,24 +130,99 @@ for the scripted walkthrough.
 
 **Reproducible headline answers** (live against `secgraph`):
 
-- `activist_convergence(since='2023-01-01')` → 8 issuers, incl. **MNRO** (GAMCO → Icahn, 96 days),
+- `activist_convergence(since='2023-01-01')` → 5 issuers, incl. **MNRO** (GAMCO → Icahn, 96 days),
   **SION** (OrbiMed → RA Capital, 5 days), **GDV** (Saba raids a Gabelli fund; GAMCO defends).
-- `campaign_timeline("MNRO")` → GAMCO **4.0%** on 2025-08-01, then **Icahn 14.79%** exactly
+- `campaign_timeline("MNRO")` → GAMCO **5.01%** on 2025-08-01, then **Icahn 14.79%** exactly
   **96 days later**; BlackRock/Dimensional correctly labelled index money, Nomura a custodian.
-- `activist_coalition("ICAHN CARL C")` → the **16-member** scrubbed cluster, ~5 hops
-  (Icahn, GAMCO/Gabelli, Bulldog/Goldstein, Karpus, Saba, Cannell, Royce, Dolan/Malone/Maffei).
+- `activist_coalition("ICAHN CARL C")` → the scrubbed cluster: **25 CIKs / 21 distinct actors**,
+  ~5 hops (Icahn, GAMCO/Gabelli, Bulldog, Karpus, Saba, Cannell, Royce, Malone, Glenview,
+  Cascade, the Dolans, B. Riley, …). Both counts are reported: affiliated vehicles of one
+  manager are collapsed for `distinct_actors`, since 3 Bulldog CIKs are 1 firm.
 - `control_chain("Income Opportunity Realty", "up")` →
   Basic Capital → American Realty (62%) → Transcontinental (83%) → Income Opportunity (85%).
 - `board_interlock_path("AAPL", "JPM")` → AAPL — JPM *via BELL JAMES A*.
 - `control_chain("AAPL")` → **abstains** (no verified ≥50% control edge) — the honesty machinery
   working as designed.
 
-> **Note on the coalition figure.** This was previously reported as 22 members. The custodial
-> scrub matched the substring `RBC`, which does **not** match `ROYAL BANK OF CANADA` — so RBC,
-> Toronto Dominion, Lazard, City of London and Ohio PERS were being counted as activists.
-> Correcting the name list removed six non-activists. **A precision fix, not a change in the
-> data** — and 16 is the stronger claim, because every remaining name is a real activist or
-> control person.
+> **Note on the coalition figure.** It has moved three times, for three different reasons, and
+> conflating them is how a headline number loses credibility.
+>
+> **22 → 16 was a precision fix.** The custodial scrub matched the substring `RBC`, which does
+> **not** match `ROYAL BANK OF CANADA` — so RBC, Toronto Dominion, Lazard, City of London and Ohio
+> PERS were counted as activists. Correcting the name list removed six non-activists. No
+> underlying data changed.
+>
+> **16 → 13 was data-window drift.** Under `--as-of 2026-06-30` the Dolan/Maffei Liberty Media
+> sub-cluster stopped reaching Malone: the ≥2-shared-target edge bridging them fell outside the
+> window.
+>
+> **13 → 25 is coverage.** The crawl now prioritises **original** 13D filings over amendments
+> (EDGAR returns newest-first, so a newest-40 cap was dropping originals entirely). Filers whose
+> originals predate that window became visible for the first time — including the Dolans again.
+> Nothing was scrubbed and nothing broke.
+>
+> Two counts are now reported: **25 CIKs / 21 distinct actors**, the latter collapsing affiliated
+> vehicles (three Bulldog CIKs are one firm; Goldstein is its principal; Digirad renamed to Star
+> Equity). A component's membership is emergent — the property that makes this graph-native also
+> means the count tracks the data window, so both memos under `results/` carry a provenance line.
+
+
+---
+
+## A second reading: the same traversal as a UBO / counterparty chain
+
+The demo above is written for an activist desk, because that is the walkthrough that works. But
+`CHAIN` is worth reading twice, because **it is literally an ultimate-beneficial-ownership
+traversal** — parent → subsidiary → sub-subsidiary through verified ≥50% stakes, hard-keyed on CIK,
+every hop citing an SEC accession number. Nothing has to be built for that reading; it is the same
+Cypher:
+
+```
+control_chain("TMUS")  →  DEUTSCHE TELEKOM AG —74.3%→ T-Mobile US, Inc.  ($92.6B institutional)
+                          cited: 0001193125-13-214474 (2013-05-10)
+```
+
+That matters commercially because the budget behaves differently. An event-driven desk buys
+finished signals, not infrastructure — and this asset explicitly has no alpha (see
+[Honest limits](#honest-limits-part-of-what-makes-it-defensible)). Risk, compliance and stewardship
+functions buy *auditability*, and their spend is triggered by exam findings and reporting deadlines
+rather than by conviction. The absence of alpha stops being an apology in that framing.
+
+**What already supports it, with no new code:**
+
+- **Abstain-or-cite is enforced, not aspirational.** `abstained=True` is a typed field with
+  machine-readable reasons (`no_verified_control_chain`, `company_not_found`), and an answer never
+  comes from a `stake`/`unknown` edge. Ten of ten mega-caps abstain on `control_chain` — the tool
+  says "no" far more often than it says "yes".
+- **Every hop is independently citable.** The traversal returns parallel `accessions` /
+  `filing_dates` / `pcts` arrays, so a four-hop chain yields four filings, not one summary.
+- **The serving surface cannot write.** `read_only=False` *raises*; there is no Cypher passthrough;
+  all seven tools carry `readOnlyHint=True`. The scrubs and thresholds that make answers correct
+  cannot be bypassed by a caller.
+- **Provenance travels with the answer.** Every response carries the `as_of` stamp and the build
+  records its inputs — the pinned as-of date, the resolved staging windows, and whether control
+  figures came from the committed CSV or a live model run.
+- **Deterministic.** The served path is LLM-free Cypher. The one model-dependent step (reading
+  percent-of-class off 13D cover pages) runs offline at build time and is pinned to a committed
+  CSV, so an answer is reproducible without an API key.
+
+**What this reading does *not* support — and these are disqualifying for a sanctions use case:**
+
+- **No sanctions or watchlist data.** There is no OFAC/SDN label, no jurisdiction, no country. A
+  screening traversal has no seed set. Calling this "sanctions screening" would be
+  aggregate-ownership detection wearing a compliance label.
+- **No aggregate ownership roll-up.** `CONTROLS` fires on a *single* ≥50% stake. The OFAC 50% rule
+  needs the *sum* across converging paths, and this data cannot support that: 13D co-filers each
+  restate the group total (twelve McCann family members each report the same 38.9% of
+  1-800-FLOWERS, so a naive sum reads 485%), 546 issuers sum above 100%, there is no filing-group
+  identifier to collapse them, and the 13G layer carries **no** percent data at all.
+- **US SEC registrants with a ticker only** — ~8,000 issuers. No private companies, no foreign
+  subsidiaries, no global corporate hierarchy. Comprehensive UBO needs a data apparatus this
+  deliberately does not have.
+
+The honest positioning is a **US-public-company control and governance layer with citation-grade
+provenance**, not a UBO product. That is a narrower claim than the traversal could be made to look
+like, and it is the one the data actually earns.
 
 ---
 
@@ -160,7 +235,8 @@ for the scripted walkthrough.
   filings are public the moment they land. Treat this as a structural and temporal map, not a
   signal.
 - **Temporal trust is layer-specific.** 13D `filing_date` is real 1994→present history (the
-  "as of" source). `DIRECTOR_OF`/`OFFICER_OF` are a 2023–2026 keep-latest **snapshot**, not a
+  "as of" source). `DIRECTOR_OF`/`OFFICER_OF` are a keep-latest **snapshot** over the staged
+  Form 3/4/5 window (currently 2022q3–2026q2; see the freshness manifest), not a
   time series. 13F `HOLDS` is quarterly with the 2024 coverage step-up excluded below the
   trend threshold — feature the cross-section, not a trend.
 - **Truth-in-inclusion.** Noise is handled by re-ranking / labelling / the custodial-hub scrub,
@@ -168,13 +244,24 @@ for the scripted walkthrough.
   and excluded *at projection time*, so the co-filing fact survives in the graph.
 - **No raw Cypher over the served surface.** Curated tools only — safer and more reliable in a
   POC than a text2cypher passthrough.
-- **No materiality data.** `Company` nodes carry `cik / ticker / name / sector / sic_code /
-  state_of_incorp` — and **no market cap, size or financials** on any of the 8,046 issuers. Nothing
-  can be ranked by "does this matter"; the user must bring their own universe filter. *This is the
-  largest remaining gap for a finance audience.*
-- **Control chains are a small-cap instrument.** Every verified ≥50% chain in this dataset is a
-  micro/nano-cap issuer (only Embraer is a widely-recognised name). Genuine as a governance and
-  minority-holder-risk screen; not a large-cap feature.
+- **Size is a proxy; fundamentals are still absent.** `Company.institutional_value_usd` sums one
+  quarter of 13F holdings (`materialize_materiality.py`), so results *can* now be ranked by
+  materiality — which is what surfaced the large-cap control relationships the earlier docs said
+  did not exist. Three limits travel with the figure: it measures **free float** (understating
+  concentrated-ownership issuers — conservative, never a false positive), it is **null for ~25% of
+  the universe** with no institutional coverage (absence is a signal, not a zero), and ETFs are in
+  the universe so SPY/QQQ rank high on other people's money. There is still **no revenue, assets or
+  true market cap** — the remaining gap for anything fundamental (leverage, coverage ratios,
+  exposure sizing), which is where SEC DERA XBRL would earn its keep if the audience shifts to
+  credit risk.
+- **Chain *depth* is a small-cap signal; single-hop control is not.** Measured on the built graph,
+  **20 of 825** controlled issuers carry ≥$10B of institutional ownership and 97 carry ≥$1B —
+  Deutsche Telekom 74.3% of T-Mobile US, Brookfield 72.9% of Brookfield Asset Management, GE 62.6%
+  of Baker Hughes, Woodbridge 70% of Thomson Reuters. The **multi-hop** pyramids remain small-cap
+  (the largest, Teekay Tankers, is ~$1.5B), so depth is the governance/minority-risk screen while
+  single-hop control is general-purpose. This corrects an earlier claim that *every* verified chain
+  was micro/nano-cap: the large ones were always present, but with no size column the output never
+  surfaced them.
 - **Board-interlock path *existence* is uninformative.** Measured over a 60-pair sample of
   well-connected companies, **every** pair links within 4 hops (5 at 1 hop, 18 at 2, 27 at 3,
   10 at 4). Lead with the named bridging director and with board centrality
@@ -204,7 +291,7 @@ python scripts/serve_ownership_mcp.py --database secgraph
 python scripts/build_secgraph.py --database secgraph
 ```
 
-See also [`docs/demo_script_activist_desk.md`](demo_script_activist_desk.md) for the scripted
+See also [`docs/demo_script_governance_desk.md`](demo_script_governance_desk.md) for the scripted
 five-question walkthrough, and the schema contract in
 [`schema/graph_schema.yaml`](../schema/graph_schema.yaml) (`BENEFICIAL_OWNER_OF`,
 `SHARES_DIRECTOR`).

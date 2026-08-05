@@ -24,6 +24,7 @@ Usage:
 """
 
 import argparse
+from datetime import date
 
 from secgraph.cli import setup_logging
 from secgraph.ingestion.ownership.bulk_datasets import (
@@ -52,7 +53,22 @@ def main():
         help="Number of most-recent periods to download (default: 4)",
     )
     parser.add_argument("--refresh", action="store_true", help="Re-download even if cached")
+    parser.add_argument(
+        "--as-of",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Only stage periods ending on or before this date. Without it, 'most recent N' "
+        "resolves against today, so the staged window slides forward between runs and a "
+        "rebuild cannot reproduce an earlier one.",
+    )
     args = parser.parse_args()
+
+    if args.as_of:
+        try:
+            date.fromisoformat(args.as_of)
+        except ValueError:
+            print(f"ERROR: --as-of {args.as_of!r} must be YYYY-MM-DD")
+            raise SystemExit(1) from None
 
     logger = setup_logging("download_ownership_data", execute=True)
     logger.info("=" * 80)
@@ -74,6 +90,7 @@ def main():
         subdir,
         num_quarters=args.quarters,
         refresh=args.refresh,
+        as_of=args.as_of,
         log=logger,
     )
     logger.info(f"✓ Staged {len(paths)} zip(s) under data/sec_ownership/{subdir}/")

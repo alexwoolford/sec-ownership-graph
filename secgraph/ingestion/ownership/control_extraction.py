@@ -77,7 +77,53 @@ _PCT_TOKEN_RE = re.compile(r"([0-9]{1,3}(?:\.[0-9]+)?)\s*%")
 # Deterministic first pass: "PERCENT OF CLASS ... NN.N%" when the label and value
 # survive flattening adjacent (the ~10% easy case). Kept because it is free.
 _PCT_OF_CLASS_RE = re.compile(r"PERCENT\s+OF\s+CLASS[^%]{0,80}?([0-9]{1,3}(?:\.[0-9]+)?)\s*%", re.I)
-_PROSE_PCT_RE = re.compile(r"representing\s+approximately\s+([0-9]{1,3}(?:\.[0-9]+)?)\s*%", re.I)
+_PROSE_PCT_RE = re.compile(
+    r"representing\s+(?:approximately\s+)?([0-9]{1,3}(?:\.[0-9]+)?)\s*%", re.I
+)
+
+# The GROUP AGGREGATE sentence — the authoritative figure when several affiliated vehicles
+# file together. A filing group's cover pages carry one row-13 percent *per vehicle*, none of
+# which is the group's total; the aggregate appears only in prose like:
+#
+#   "the aggregate number of Securities to which this Schedule 13D relates is 1,502,130
+#    shares, representing 5.01% of the 29,978,942 shares outstanding"
+#
+# Reading a per-vehicle row instead produced 4.0% on a Schedule 13D — impossible, since 13D
+# requires >5% — on the demo's headline output. Preferred over any single row-13 value.
+_AGGREGATE_PCT_RE = re.compile(
+    # "aggregate number|amount of <any words>, representing [approximately] N%".
+    # Permissive between the two anchors — issuers write "Securities", "Common Stock",
+    # "shares of Common Stock, par value $0.01" — but it must not reach across a sentence
+    # boundary and pair the aggregate clause with an unrelated later percent.
+    #
+    # The boundary is "period followed by whitespace", NOT any period: filings are full of
+    # decimals ("$0.01", "1,502,130.5"), and `[^.]` broke on every one of them.
+    r"aggregate\s+(?:number|amount)\s+of(?:(?!\.\s).){0,220}?"
+    r"representing\s+(?:approximately\s+)?([0-9]{1,3}(?:\.[0-9]+)?)\s*%",
+    re.I,
+)
+
+# The GROUP TOTALS ROW — the other way filings state an aggregate. Instead of prose, some
+# filings print a per-vehicle table ending in a "Totals" line:
+#
+#   Name Owned Beneficially Approximate % Class
+#   ARL* 6,721,999 82.85 %   EQK* 5,521,999 68.06 %   TCI AcqSub 1,200,000 14.79 %
+#   Totals 6,721,999 82.85 %
+#
+# The extractor read 14.79% here (the last subsidiary row) and silently dropped a verified
+# 82.85% control link, deleting the deepest control chain in the graph. Caught by re-checking
+# the chain count after the sub-5% fix, not by the sub-5% rule — 14.79% is above 5%, so the
+# threshold test cannot see this class of error at all.
+# `\btotals?\b` alone was too loose: cover-page row 12 reads "Check if the Aggregate Amount in
+# Row (11) Excludes Certain Shares", and "Totals" also appears in unrelated tables, so the
+# pattern skated forward to whatever percent came next. Require the number within ~40 chars and
+# forbid an intervening digit-comma run (a share count), which keeps it on a real totals line.
+_TOTALS_PCT_RE = re.compile(r"\btotals?\b[^%\n]{0,40}?([0-9]{1,3}(?:\.[0-9]+)?)\s*%", re.I)
+
+# Minimum percent-of-class that can appear on an *original* Schedule 13D. Section 13(d)
+# reporting is triggered by crossing 5%, so a lower figure on an original filing is a parse
+# error, not a fact. Amendments are exempt: a 13D/A legitimately reports an exit below 5%.
+_MIN_ORIGINAL_13D_PCT = 5.0
 
 
 # --------------------------------------------------------------------------- #
@@ -108,19 +154,44 @@ def cover_window(text: str, chars: int = _COVER_WINDOW_CHARS) -> str:
     return text[start : idx + chars // 2]
 
 
-def parse_percent_deterministic(text: str) -> float | None:
-    """Recover percent-of-class by regex when label and value survive adjacent.
+def parse_aggregate_percent(text: str) -> float | None:
+    """The group-aggregate percent, when the filing states one.
 
-    Returns None for the common case where flattening scatters them (that is the
-    LLM fallback's job). Never returns an implausible (>100%) value.
+    Authoritative for a filing group: several affiliated vehicles each carry their own row-13
+    percent, and none of them is the group total. Two forms are recognised — the prose
+    "aggregate ... representing N%" sentence, and a per-vehicle table's "Totals" row. Returns
+    None when neither is present (the common single-filer case, where row 13 *is* the answer).
     """
-    for pattern in (_PCT_OF_CLASS_RE, _PROSE_PCT_RE):
+    for pattern in (_AGGREGATE_PCT_RE, _TOTALS_PCT_RE):
+        m = pattern.search(text)
+        if m:
+            pct = _coerce_pct(m.group(1))
+            if pct is not None:
+                return pct
+    return None
+
+
+def parse_percent_deterministic(text: str) -> tuple[float | None, str | None]:
+    """Recover percent-of-class by regex. Returns ``(percent, source)``.
+
+    Tries the group aggregate first — a per-vehicle row-13 value understates a filing group
+    and produced sub-5% figures on Schedule 13Ds. ``source`` records which rule matched, so a
+    served figure is auditable rather than just a number.
+
+    Returns ``(None, None)`` when flattening scattered the label from the value (the LLM
+    fallback's job). Never returns an implausible (>100%) value.
+    """
+    for pattern, source in (
+        (_AGGREGATE_PCT_RE, "aggregate_prose"),
+        (_PCT_OF_CLASS_RE, "row13"),
+        (_PROSE_PCT_RE, "prose"),
+    ):
         m = pattern.search(text)
         if m:
             val = _coerce_pct(m.group(1))
             if val is not None:
-                return val
-    return None
+                return val, source
+    return None, None
 
 
 def _coerce_pct(value: Any) -> float | None:
@@ -141,12 +212,65 @@ def verify_percent(pct: float | None, text: str) -> bool:
     is not trustworthy, so it is rejected. Matches on the number appearing adjacent
     to a ``%`` sign, tolerant of the model normalizing ``30`` vs ``30.0`` vs
     ``30.00`` (SEC cover pages write percents inconsistently).
+
+    **This is a presence check, not an identity check** — it cannot tell the group aggregate
+    from one affiliated vehicle's row, because both are real numbers in the document. That is
+    how 899 sub-5% figures passed on Schedule 13Ds. :func:`resolve_percent` adds the identity
+    rule; this stays as the necessary-but-insufficient first gate.
     """
     if pct is None:
         return False
     present = {_coerce_pct(tok) for tok in _PCT_TOKEN_RE.findall(text)}
     present.discard(None)
     return any(p is not None and abs(p - pct) < 0.05 for p in present)
+
+
+def resolve_percent(
+    pct: float | None,
+    text: str,
+    *,
+    filing_type: str = "13D",
+    is_amendment: bool = False,
+    source: str | None = None,
+) -> tuple[float | None, str | None]:
+    """Decide the percent to trust, and record why. Returns ``(percent, source)``.
+
+    Layers an *identity* rule on top of :func:`verify_percent`'s presence check:
+
+    1. The figure must appear in the document (presence), else reject.
+    2. On an **original** Schedule 13D, a percent below 5% is impossible — Section 13(d)
+       reporting is triggered by crossing 5%. Such a figure is a per-vehicle row mistaken for
+       the group total, so prefer the stated group aggregate when the filing has one.
+    3. If no aggregate is available, reject rather than publish an impossible number. A missing
+       percent is honest; ``4.0%`` on a 13D is not, and it is the first thing a filings-literate
+       reader challenges.
+
+    Amendments are exempt from rule 2: a 13D/A legitimately reports falling below 5% on exit.
+    13G is exempt too — its thresholds differ by filer class (5% generally, but institutional
+    and exempt filers report on other triggers).
+    """
+    if pct is None or not verify_percent(pct, text):
+        return None, None
+
+    # A stated group aggregate outranks any per-vehicle row, regardless of magnitude. The 5%
+    # threshold test alone was not enough: one filing's subsidiary row read 14.79% against an
+    # 82.85% group total — above 5%, so invisible to the threshold, yet it silently deleted a
+    # verified control link. Only *raise* to the aggregate; a candidate already at or above it
+    # is left alone, so a correctly-read total is never revised downward.
+    aggregate = parse_aggregate_percent(text)
+    final, final_source = (
+        (aggregate, "aggregate_total") if aggregate is not None and aggregate > pct else (pct, None)
+    )
+
+    # The threshold check runs LAST, on whatever value won — including a substituted aggregate.
+    # Checking it before the substitution let three impossible figures through: the aggregate
+    # regex matched a cover-page row label rather than a real totals line, raised the value, and
+    # then bypassed the gate entirely. An aggregate that is still impossible is still wrong.
+    original_13d = filing_type.upper().startswith("13D") and not is_amendment
+    if original_13d and final < _MIN_ORIGINAL_13D_PCT:
+        return None, "rejected_below_13d_threshold"
+
+    return final, final_source or source or "llm"
 
 
 def classify_control(pct: float | None, threshold: float = CONTROL_THRESHOLD_PCT) -> str:
@@ -166,25 +290,34 @@ def build_edge_result(
     extracted: dict[str, Any] | None,
     text: str,
     threshold: float = CONTROL_THRESHOLD_PCT,
+    *,
+    filing_type: str = "13D",
+    is_amendment: bool = False,
 ) -> dict[str, Any]:
     """Assemble the verified edge-property row from a raw extraction + source text.
 
-    Applies the verify-against-source gate to the percent, coerces voting counts,
-    and derives the control label. This is the pure core of the pipeline: given what
-    the model returned and the document it read, decide what (if anything) is safe to
-    write. A percent that fails verification collapses the row to ``unknown``.
+    Applies :func:`resolve_percent` — presence *and* identity — coerces voting counts, and
+    derives the control label. This is the pure core of the pipeline: given what the model
+    returned and the document it read, decide what (if anything) is safe to write. A percent
+    that fails either gate collapses the row to ``unknown``.
+
+    ``pct_source`` records which rule produced the figure, so a served number is auditable:
+    ``aggregate_prose`` (the group total), ``row13``, ``prose``, ``llm``, or
+    ``rejected_below_13d_threshold`` when an impossible sub-5% original was thrown out.
     """
     extracted = extracted or {}
     pct = _coerce_pct(extracted.get("percent_of_class"))
-    verified = verify_percent(pct, text)
-    final_pct = pct if verified else None
+    final_pct, source = resolve_percent(
+        pct, text, filing_type=filing_type, is_amendment=is_amendment
+    )
     return {
         "accession_number": accession,
         "percent_of_class": final_pct,
         "sole_voting": _coerce_int(extracted.get("sole_voting")),
         "shared_voting": _coerce_int(extracted.get("shared_voting")),
         "control_class": classify_control(final_pct, threshold),
-        "pct_verified": verified,
+        "pct_verified": final_pct is not None,
+        "pct_source": source,
     }
 
 
@@ -231,7 +364,13 @@ _SYSTEM_PROMPT = (
     '"percent_of_class" (number, the row-13 percent, e.g. 53.7; null if absent), '
     '"sole_voting" (integer shares, row 7; null if absent), '
     '"shared_voting" (integer shares, row 9; null if absent). '
-    "If multiple reporting persons appear, use the aggregate for the primary filer. "
+    "CRITICAL — filing groups: several affiliated vehicles often file together, each with its "
+    "OWN row-13 percent, none of which is the group total. If the text gives both a per-entity "
+    "breakdown and an aggregate for the group, return the AGGREGATE. Prefer a sentence of the "
+    'form "the aggregate number of Securities ... representing N% of the M shares outstanding" '
+    "over any single vehicle's row-13 value. Returning one vehicle's percent understates the "
+    "filing and, on a Schedule 13D, produces a figure below the 5% reporting threshold — which "
+    "is impossible and is treated as an error. "
     "Do not guess — use null when a value is not present in the text."
 )
 
@@ -292,18 +431,28 @@ def extract_edge(
     every input edge is accounted for.
     """
     accession = row["accession_number"]
+    # Amendment status gates the sub-5% rule: an original 13D cannot report below 5%, but a
+    # 13D/A legitimately can (that is how an exit is disclosed). Read from the edge when the
+    # loader recorded it; default to "original" so the stricter rule applies when unknown.
+    is_amd = bool(row.get("is_amendment", False))
+    kwargs = {"filing_type": row.get("filing_type", "13D"), "is_amendment": is_amd}
+
     raw = fetch_submission_body(row["subject_cik"], accession, cache_dir, refresh=refresh)
     if not raw:
-        return build_edge_result(accession, None, "", threshold)
+        return build_edge_result(accession, None, "", threshold, **kwargs)
     text = strip_markup(raw)
 
-    det = parse_percent_deterministic(text)
+    det, det_source = parse_percent_deterministic(text)
     if det is not None:
-        return build_edge_result(accession, {"percent_of_class": det}, text, threshold)
+        result = build_edge_result(accession, {"percent_of_class": det}, text, threshold, **kwargs)
+        # Keep the regex provenance when it survived resolution unchanged.
+        if result["percent_of_class"] == det and det_source:
+            result["pct_source"] = det_source
+        return result
 
     window = cover_window(text)
     extracted = extract_with_llm(window, llm_client, model)
-    return build_edge_result(accession, extracted, text, threshold)
+    return build_edge_result(accession, extracted, text, threshold, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -320,7 +469,11 @@ def _edges_needing_extraction(session, only_missing: bool) -> list[dict[str, Any
         f"""
         MATCH (b:BeneficialOwner)-[r:BENEFICIAL_OWNER_OF {{filing_type: '13D'}}]->(c:Company)
         WHERE c.cik IS NOT NULL AND r.accession_number IS NOT NULL {where_done}
-        RETURN DISTINCT c.cik AS subject_cik, r.accession_number AS accession_number
+        RETURN DISTINCT c.cik AS subject_cik, r.accession_number AS accession_number,
+               // coalesce, not a bare read: edges loaded before is_amendment existed have no
+               // such property, and false (treat as original) applies the stricter 5% rule.
+               coalesce(r.filing_is_original, true) = false AS is_amendment,
+               '13D' AS filing_type
         """
     ).data()
 
@@ -334,6 +487,7 @@ _WRITE_QUERY = """
         r.shared_voting = row.shared_voting,
         r.control_class = row.control_class,
         r.pct_verified = row.pct_verified,
+        r.pct_source = row.pct_source,
         r.control_extracted_at = datetime()
     RETURN count(r) AS n
 """

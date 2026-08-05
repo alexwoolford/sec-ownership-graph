@@ -106,6 +106,41 @@ class TestPeriodKeys:
         }
         assert bulk_datasets.select_quarters(available, 2) == ["2025q1", "2024q4"]
 
+    # --- as-of pinning ------------------------------------------------------------------- #
+    # "Most recent N" resolves against the run date, so it silently means something different
+    # every quarter. --as-of is what makes a rebuild select the same windows.
+
+    @pytest.mark.parametrize(
+        "period,expected",
+        [
+            ("2025q1", "2025-03-31"),
+            ("2026q2", "2026-06-30"),
+            ("2024q4", "2024-12-31"),
+            ("01sep2025-30nov2025", "2025-11-30"),  # range keys resolve to their END
+            ("202606a", "2026-06-15"),  # FTD first half
+            ("202606b", "2026-06-30"),  # FTD second half
+            ("202602b", "2026-02-28"),  # month-length aware
+        ],
+    )
+    def test_period_end_date(self, period, expected):
+        assert bulk_datasets.period_end_date(period).isoformat() == expected
+
+    def test_select_quarters_respects_as_of(self):
+        available = {"2026q2": "u", "2026q1": "u", "2025q4": "u", "2025q3": "u"}
+        # Without a cutoff the newest quarter wins; with one, everything after it is excluded.
+        assert bulk_datasets.select_quarters(available, 2) == ["2026q2", "2026q1"]
+        assert bulk_datasets.select_quarters(available, 2, "2026-03-31") == ["2026q1", "2025q4"]
+
+    def test_select_quarters_as_of_accepts_date_object(self):
+        from datetime import date
+
+        available = {"2026q2": "u", "2026q1": "u"}
+        assert bulk_datasets.select_quarters(available, 5, date(2026, 3, 31)) == ["2026q1"]
+
+    def test_select_quarters_as_of_before_all_data_returns_empty(self):
+        available = {"2026q2": "u", "2026q1": "u"}
+        assert bulk_datasets.select_quarters(available, 5, "2020-01-01") == []
+
     def test_daterange_sorts_by_end_date(self):
         available = {
             "01mar2025-31may2025": "u1",
@@ -172,6 +207,35 @@ class TestIterTsvRows:
             "2024q4_form345.zip",
             "2024q3_form345.zip",
         ]
+
+    def test_staged_zip_paths_limit_and_as_of(self, tmp_path, monkeypatch):
+        """The unbounded glob is a reproducibility hazard: a machine that once staged extra
+        quarters loads them all, so the same command builds a different graph."""
+        cache = tmp_path / "form345"
+        cache.mkdir()
+        for period in ("2024q3", "2024q4", "2025q1", "2025q2"):
+            (cache / f"{period}_form345.zip").write_bytes(b"x")
+        monkeypatch.setattr(bulk_datasets, "get_ownership_data_dir", lambda subdir: cache)
+
+        assert len(bulk_datasets.staged_zip_paths("form345")) == 4  # unbounded default
+        assert [p.name for p in bulk_datasets.staged_zip_paths("form345", limit=2)] == [
+            "2025q2_form345.zip",
+            "2025q1_form345.zip",
+        ]
+        assert [p.name for p in bulk_datasets.staged_zip_paths("form345", as_of="2024-12-31")] == [
+            "2024q4_form345.zip",
+            "2024q3_form345.zip",
+        ]
+
+    def test_staged_zip_paths_keeps_unparseable_names(self, tmp_path, monkeypatch):
+        """An unrecognised filename must not be silently dropped from the load."""
+        cache = tmp_path / "form345"
+        cache.mkdir()
+        (cache / "2025q1_form345.zip").write_bytes(b"x")
+        (cache / "weird_form345.zip").write_bytes(b"x")
+        monkeypatch.setattr(bulk_datasets, "get_ownership_data_dir", lambda subdir: cache)
+        names = {p.name for p in bulk_datasets.staged_zip_paths("form345", as_of="2025-12-31")}
+        assert names == {"2025q1_form345.zip", "weird_form345.zip"}
 
 
 # --------------------------------------------------------------------------- #
@@ -374,6 +438,187 @@ class TestBeneficialHeader:
         assert "some-person-group" in by_owner  # name-slug fallback
         assert by_owner["some-person-group"]["resolved"] is False
 
+    # --- original-filing prioritisation --------------------------------------------------- #
+    # EDGAR returns newest-first, so a newest-N cap fills with /A amendments on a
+    # heavily-amended subject and drops the originals. Herc Holdings has 54 13D-family filings
+    # of which only 3 are originals (2014, 2014, 2016) — all outside a newest-40 window. The
+    # first-mover date then reported an amendment to a years-old stake as a fresh arrival.
+
+    def test_prioritize_originals_keeps_all_originals(self):
+        filings = [
+            {"accession": f"a{i}", "form": "SC 13D/A", "date": f"2025-01-{i:02d}"}
+            for i in range(1, 21)
+        ] + [
+            {"accession": "orig-2016", "form": "SC 13D", "date": "2016-08-10"},
+            {"accession": "orig-2014", "form": "SC 13D", "date": "2014-08-20"},
+        ]
+        kept = beneficial.prioritize_originals(filings, 5)
+        accs = [f["accession"] for f in kept]
+        assert accs[:2] == ["orig-2014", "orig-2016"], "originals first, oldest first"
+        assert len(kept) == 5, "budget still respected"
+
+    def test_prioritize_originals_fills_remainder_with_amendments(self):
+        """Recent activity must still be visible once originals are secured."""
+        filings = [
+            {"accession": "orig", "form": "SC 13D", "date": "2016-08-10"},
+            {"accession": "amd1", "form": "SC 13D/A", "date": "2025-01-01"},
+            {"accession": "amd2", "form": "SC 13D/A", "date": "2025-02-01"},
+        ]
+        kept = beneficial.prioritize_originals(filings, 3)
+        assert [f["accession"] for f in kept] == ["orig", "amd1", "amd2"]
+
+    def test_prioritize_originals_handles_no_originals(self):
+        filings = [{"accession": "amd", "form": "SC 13D/A", "date": "2025-01-01"}]
+        assert beneficial.prioritize_originals(filings, 5) == filings
+
+    def test_prioritize_originals_zero_limit(self):
+        filings = [{"accession": "orig", "form": "SC 13D", "date": "2016-08-10"}]
+        assert beneficial.prioritize_originals(filings, 0) == []
+
+    # --- as-of pinning of the 13D/G crawl ------------------------------------------------- #
+
+    def test_filings_as_of_filters_by_date(self):
+        filings = [
+            {"accession": "a", "form": "SC 13D", "date": "2026-07-01"},
+            {"accession": "b", "form": "SC 13D", "date": "2026-06-30"},
+            {"accession": "c", "form": "SC 13D", "date": "2025-01-15"},
+        ]
+        kept = beneficial.filings_as_of(filings, "2026-06-30")
+        assert [f["accession"] for f in kept] == ["b", "c"]  # boundary is inclusive
+
+    def test_filings_as_of_none_is_passthrough(self):
+        filings = [{"accession": "a", "form": "SC 13D", "date": "2026-07-01"}]
+        assert beneficial.filings_as_of(filings, None) == filings
+
+    @pytest.mark.parametrize("bad_date", ["", None, "2026", "not-a-date"])
+    def test_filings_as_of_keeps_unparseable_dates(self, bad_date):
+        """Dropping a filing over a formatting quirk would lose a real edge; parse_header
+        supplies the authoritative date downstream."""
+        filings = [{"accession": "a", "form": "SC 13D", "date": bad_date}]
+        assert beneficial.filings_as_of(filings, "2026-06-30") == filings
+
+    def test_as_of_filter_precedes_the_per_subject_cap(self, monkeypatch):
+        """Order matters: filtering *after* the 40-filing truncation would return fewer than 40
+        filings for an active subject, so a pinned rebuild would see less history than an
+        unpinned one."""
+        # 45 filings, the 10 newest of which are after the cutoff.
+        filings = [
+            {"accession": f"new-{i}", "form": "SC 13D", "date": "2026-07-01"} for i in range(10)
+        ] + [{"accession": f"old-{i}", "form": "SC 13D", "date": "2025-01-15"} for i in range(35)]
+
+        monkeypatch.setattr(beneficial, "fetch_13dg_accessions", lambda *a, **k: filings)
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+
+        rows = beneficial._crawl_subject("0001326380", Path("/tmp"), False, False, 40, "2026-06-30")
+        # All 35 in-window filings survive; none of the 10 out-of-window ones do.
+        assert len(rows) == 35
+        assert all(r["accession_number"].startswith("old-") for r in rows)
+
+    # --- outage resilience -------------------------------------------------------------- #
+    # A real internet drop killed a 2.5-hour crawl at subject 3,500 of 8,000: IncompleteRead is
+    # an http.client.HTTPException, NOT an OSError, so it escaped the retry list AND the
+    # per-subject except clause, and the end-of-crawl DB write meant zero rows were saved.
+
+    def test_incomplete_read_is_a_transient_fetch_error(self):
+        """The exact exception class a mid-transfer network drop raises must be retried."""
+        import http.client
+
+        from secgraph.ingestion.ownership import edgar_client
+
+        assert not issubclass(http.client.IncompleteRead, OSError)  # why it was missed
+        assert issubclass(http.client.IncompleteRead, edgar_client._TRANSIENT_FETCH_ERRORS)
+
+    def test_arbitrary_worker_exception_does_not_kill_the_crawl(self, monkeypatch):
+        """Anything escaping a worker propagates through .result() and ends the whole run."""
+        import http.client
+
+        def flaky(subject_cik, cache_dir, refresh=False):
+            if subject_cik == "0000012345":
+                raise http.client.IncompleteRead(b"partial")
+            return [{"accession": "a", "form": "SC 13D", "date": "2025-01-15"}]
+
+        monkeypatch.setattr(beneficial, "fetch_13dg_accessions", flaky)
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+
+        rows = beneficial.build_edge_rows(["0001326380"] * 9 + ["0000012345"])
+        assert rows, "the other nine subjects must still yield edges"
+
+    def test_on_batch_checkpoints_during_the_crawl(self, monkeypatch):
+        """Rows must reach the caller *during* the crawl, not only at the end."""
+        monkeypatch.setattr(
+            beneficial,
+            "fetch_13dg_accessions",
+            lambda cik, cache_dir, refresh=False: [
+                {"accession": f"{cik}-a", "form": "SC 13D", "date": "2025-01-15"}
+            ],
+        )
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+
+        batches: list[int] = []
+        returned = beneficial.build_edge_rows(
+            [f"{i:010d}" for i in range(10)],
+            on_batch=lambda rows: batches.append(len(rows)),
+            checkpoint_every=4,
+        )
+        # 10 subjects at every-4 → flushes at 4 and 8, then a final flush of the remainder.
+        assert len(batches) >= 2, f"expected multiple checkpoints, got {batches}"
+        assert sum(batches) == 10, f"every row must be handed over exactly once: {batches}"
+        # Handed-off rows are not also returned, or they would be written twice.
+        assert returned == []
+
+    def test_without_on_batch_rows_are_returned(self, monkeypatch):
+        """The dry-run path has no callback and must still see every row."""
+        monkeypatch.setattr(
+            beneficial,
+            "fetch_13dg_accessions",
+            lambda cik, cache_dir, refresh=False: [
+                {"accession": f"{cik}-a", "form": "SC 13D", "date": "2025-01-15"}
+            ],
+        )
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+        rows = beneficial.build_edge_rows([f"{i:010d}" for i in range(5)])
+        assert len(rows) == 5
+
+    def test_isolated_fetch_failure_is_tolerated(self, monkeypatch):
+        """One unreachable subject must not lose a multi-hour crawl."""
+        from secgraph.ingestion.ownership.edgar_client import SubmissionsFetchError
+
+        def flaky(subject_cik, cache_dir, refresh=False):
+            if subject_cik == "0000012345":
+                raise SubmissionsFetchError("boom")
+            return [{"accession": "a", "form": "SC 13D", "date": "2025-01-15"}]
+
+        monkeypatch.setattr(beneficial, "fetch_13dg_accessions", flaky)
+        monkeypatch.setattr(beneficial, "fetch_submission_header", lambda *a, **k: _HEADER)
+        # 1 of 10 failing is under the threshold: return what we have.
+        subjects = ["0001326380"] * 9 + ["0000012345"]
+        rows = beneficial.build_edge_rows(subjects)
+        assert rows, "surviving subjects should still produce edges"
+
+    def test_systemic_fetch_failure_aborts(self, monkeypatch):
+        """Mass failure (e.g. SEC 403-ing every request) must abort, not half-build."""
+        from secgraph.ingestion.ownership.edgar_client import SubmissionsFetchError
+
+        def always_blocked(subject_cik, cache_dir, refresh=False):
+            raise SubmissionsFetchError("403 Forbidden")
+
+        monkeypatch.setattr(beneficial, "fetch_13dg_accessions", always_blocked)
+        with pytest.raises(SubmissionsFetchError, match="aborting"):
+            beneficial.build_edge_rows([f"{i:010d}" for i in range(10)])
+
+    def test_zero_edges_universe_wide_aborts(self, monkeypatch):
+        """A green build over an empty 13D layer is the failure this prevents."""
+        from secgraph.ingestion.ownership.edgar_client import SubmissionsFetchError
+
+        monkeypatch.setattr(beneficial, "build_edge_rows", lambda *a, **k: [])
+        with pytest.raises(SubmissionsFetchError, match="0 Schedule 13D/13G edges"):
+            beneficial.load_beneficial_owners(
+                driver=None,
+                subject_ciks=["0001326380", "0000012345"],
+                database="secgraph",
+                execute=False,
+            )
+
 
 # --------------------------------------------------------------------------- #
 # universe: company_tickers.json dedup by CIK
@@ -432,6 +677,62 @@ class TestEdgarClient:
         forms = [r["form"] for r in result]
         assert forms == ["SC 13D", "SC 13G/A", "SCHEDULE 13D/A", "SCHEDULE 13G"]
 
+    # --- the poison-cache contract ------------------------------------------------------- #
+    # A 403 (SEC rejecting the User-Agent) once cached "[]" for every subject, so the build
+    # completed green over an empty graph. Only a 404 is a real answer; nothing else may be
+    # cached, or a transient failure becomes permanent data loss.
+
+    def test_404_caches_empty_result(self, tmp_path, monkeypatch):
+        import urllib.error
+
+        from secgraph.ingestion.ownership import edgar_client
+
+        def not_found(url):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        monkeypatch.setattr(edgar_client, "_throttled_get", not_found)
+        assert edgar_client.fetch_13dg_accessions("0000000002", tmp_path) == []
+        # Cached, so a resume skips this subject rather than re-fetching forever.
+        assert (tmp_path / "0000000002_index.json").read_text() == "[]"
+
+    @pytest.mark.parametrize("status", [403, 429, 500, 503])
+    def test_non_404_raises_and_does_not_cache(self, tmp_path, monkeypatch, status):
+        import urllib.error
+
+        from secgraph.ingestion.ownership import edgar_client
+
+        def blocked(url):
+            raise urllib.error.HTTPError(url, status, "blocked", {}, None)
+
+        monkeypatch.setattr(edgar_client, "_throttled_get", blocked)
+        with pytest.raises(edgar_client.SubmissionsFetchError):
+            edgar_client.fetch_13dg_accessions("0000000003", tmp_path)
+        assert not (tmp_path / "0000000003_index.json").exists()
+
+    def test_transient_error_does_not_cache(self, tmp_path, monkeypatch):
+        from secgraph.ingestion.ownership import edgar_client
+
+        def timeout(url):
+            raise TimeoutError("read timed out")
+
+        monkeypatch.setattr(edgar_client, "_throttled_get", timeout)
+        with pytest.raises(edgar_client.SubmissionsFetchError):
+            edgar_client.fetch_13dg_accessions("0000000004", tmp_path)
+        assert not (tmp_path / "0000000004_index.json").exists()
+
+    @pytest.mark.parametrize(
+        "ua,is_placeholder",
+        [
+            ("public-company-graph research contact@example.com", True),
+            ("Example Corp research team@EXAMPLE.COM", True),
+            ("Alex Woolford alex@realdomain.io", False),
+        ],
+    )
+    def test_placeholder_user_agent_detection(self, ua, is_placeholder):
+        from secgraph.ingestion.ownership import edgar_client
+
+        assert edgar_client.is_placeholder_user_agent(ua) is is_placeholder
+
     @pytest.mark.parametrize(
         "form,expected",
         [
@@ -468,7 +769,10 @@ class TestInstitutionalHoldings:
                     "acc-q1\tCITADEL ADVISORS LLC",
                     "acc-q2\tCITADEL ADVISORS LLC",
                 ],
-                "INFOTABLE": ["ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT", *holdings],
+                "INFOTABLE": [
+                    "ACCESSION_NUMBER\tCUSIP\tVALUE\tSSHPRNAMT\tPUTCALL",
+                    *holdings,
+                ],
             },
         )
 
@@ -493,6 +797,69 @@ class TestInstitutionalHoldings:
         by_period = {r["report_period"]: r for r in rows}
         assert by_period["2024-12-31"]["value_usd"] == 1000
         assert by_period["2025-03-31"]["value_usd"] == 1800  # accumulation is visible
+
+    def test_option_notional_is_not_counted_as_ownership(self, tmp_path):
+        """The bug that would have ended a demo: PUTCALL was never read.
+
+        Belvedere Trading appeared as Eversource's largest holder at $18.68B while owning **67
+        shares** — the rest was a $3.9B call and a $14.8B put. Options are ~7% of all reported
+        13F dollars and concentrate in market-maker books, so they distort specific issuers
+        badly. They are kept (a reported put is a true fact) but carried separately, because an
+        option is a position, not a stake.
+        """
+        zpath = tmp_path / "13f.zip"
+        self._zip(
+            zpath,
+            subs=["acc-q1\t0001423053\t15-FEB-2025\t31-DEC-2024"],
+            holdings=[
+                "acc-q1\t037833100\t1000\t500\t",  # stock (PUTCALL blank)
+                "acc-q1\t037833100\t9000\t4000\tCall",
+                "acc-q1\t037833100\t7000\t3000\tPut",
+            ],
+        )
+        rows = institutional.build_holdings_rows(
+            [zpath], {"037833100": "0000320193"}, universe_ciks={"0000320193"}
+        )
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["value_usd"] == 1000, "only the stock line is ownership"
+        assert r["shares"] == 500, "option contracts are not shares"
+        assert r["call_notional_usd"] == 9000
+        assert r["put_notional_usd"] == 7000
+
+    def test_option_only_holding_reports_zero_ownership(self, tmp_path):
+        """The Belvedere shape exactly: essentially no stock, enormous option notional."""
+        zpath = tmp_path / "13f.zip"
+        self._zip(
+            zpath,
+            subs=["acc-q1\t0001423053\t15-FEB-2025\t31-DEC-2024"],
+            holdings=[
+                "acc-q1\t037833100\t0\t67\t",
+                "acc-q1\t037833100\t14783000000\t2222000\tPut",
+            ],
+        )
+        rows = institutional.build_holdings_rows(
+            [zpath], {"037833100": "0000320193"}, universe_ciks={"0000320193"}
+        )
+        assert rows[0]["value_usd"] == 0, "must NOT rank as a top holder"
+        assert rows[0]["put_notional_usd"] == 14783000000
+
+    def test_putcall_matching_is_case_insensitive(self, tmp_path):
+        zpath = tmp_path / "13f.zip"
+        self._zip(
+            zpath,
+            subs=["acc-q1\t0001423053\t15-FEB-2025\t31-DEC-2024"],
+            holdings=[
+                "acc-q1\t037833100\t100\t1\tCALL",
+                "acc-q1\t037833100\t200\t2\tput",
+            ],
+        )
+        rows = institutional.build_holdings_rows(
+            [zpath], {"037833100": "0000320193"}, universe_ciks={"0000320193"}
+        )
+        assert rows[0]["value_usd"] == 0
+        assert rows[0]["call_notional_usd"] == 100
+        assert rows[0]["put_notional_usd"] == 200
 
     def test_multiple_cusip_lines_summed_within_a_quarter(self, tmp_path):
         """A manager's split lines for one issuer in one quarter aggregate to one edge."""

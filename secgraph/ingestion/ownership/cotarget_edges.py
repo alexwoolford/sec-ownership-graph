@@ -55,7 +55,11 @@ _COMPUTE_QUERY = f"""
     MATCH (a:BeneficialOwner)-[:BENEFICIAL_OWNER_OF {{filing_type:'13D'}}]->(c:Company)
           <-[:BENEFICIAL_OWNER_OF {{filing_type:'13D'}}]-(b:BeneficialOwner)
     WHERE a.cik < b.cik AND a.cik IS NOT NULL AND b.cik IS NOT NULL
-    WITH a, b, collect(DISTINCT c.cik) AS shared
+    // Sort before collecting: shared is truncated to _MAX_SHARED_CIKS and surfaces as the
+    // coalition's cited evidence, so an unordered collect() changed which accessions were
+    // shown between runs on an identical graph.
+    WITH a, b, c.cik AS cik ORDER BY cik
+    WITH a, b, collect(DISTINCT cik) AS shared
     WHERE size(shared) >= $min_shared
     RETURN elementId(a) AS a_eid, elementId(b) AS b_eid,
            a.cik AS a_cik, a.name AS a_name,

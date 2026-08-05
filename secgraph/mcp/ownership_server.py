@@ -61,8 +61,8 @@ _SECGRAPH_SCHEMA: dict[str, Any] = {
             "percent_of_class, control_class ('control' when >=50%), accession_number, "
             "filing_date. 13D filing_date is real 1994->present history."
         ),
-        "DIRECTOR_OF": "(Insider)->(Company). 2023-2026 keep-latest snapshot (NOT a time series).",
-        "OFFICER_OF": "(Insider)->(Company). 2023-2026 keep-latest snapshot.",
+        "DIRECTOR_OF": "(Insider)->(Company). Keep-latest snapshot over the staged Form 3/4/5 window (NOT a time series).",
+        "OFFICER_OF": "(Insider)->(Company). Keep-latest snapshot over the staged Form 3/4/5 window.",
         "SHARES_DIRECTOR": (
             "(Company)-(Company) derived board-interlock edge (undirected, one per pair). "
             "Props: director_count, via_ciks, source, computed_at."
@@ -79,17 +79,20 @@ _SECGRAPH_SCHEMA: dict[str, Any] = {
         "activist_coalition — PRIMARY: the custodial-scrubbed co-targeting coalition around a "
         "named activist, with its diameter",
         "ownership_snapshot — SUPPORTING: top holders / insiders / control status for an issuer",
-        "control_chain — SUPPORTING: transitive >=50% control chains. Note the verified chains "
-        "in this dataset are micro/nano-cap issuers, so treat this as a small-cap governance "
-        "screen rather than a large-cap tool",
+        "control_chain — PRIMARY: transitive >=50% control chains. Works on large caps: 27 of "
+        "825 controlled issuers carry >=$10B of institutional ownership (Deutsche Telekom holds "
+        "74.3% of T-Mobile US; GE held 62.6% of Baker Hughes). Only the MULTI-HOP pyramids are "
+        "small-cap. Results carry institutional_value_usd so they can be ranked by size",
         "board_interlock_path — SUPPORTING: shortest board-interlock path. The *existence* of a "
         "path is near-universal (every well-connected pair links within 4 hops), so the "
         "informative output is the NAMED BRIDGING DIRECTOR, not whether a path exists",
     ],
     "honest_limits": (
         "CIK-only (understates family structure, conservative). No prediction/alpha claims. "
-        "NO market-cap, size or financial data on any company — results cannot be ranked by "
-        "materiality. Board/insider edges are a 2023-2026 keep-latest snapshot; only 13D "
+        "Size is a PROXY only: institutional_value_usd sums one quarter of 13F holdings, so it "
+        "measures free float (understating concentrated-ownership issuers), is null for ~25% of "
+        "companies with no institutional coverage, and includes ETFs. No revenue, assets or true "
+        "market cap. Board/insider edges are a keep-latest snapshot; only 13D "
         "filing_date is a real time series. Interlock path existence is not informative at "
         "<=4 hops. Activist screens are gated to a curated franchise list: precision over "
         "recall, so unlisted activists are missed by design. No raw Cypher."
@@ -151,6 +154,44 @@ def create_ownership_mcp_server(
 
     def _timed(result) -> dict[str, Any]:
         return _envelope(result, freshness, renderer=CampaignTimelineEngine.format_answer)
+
+    @mcp.tool(
+        name="influence_map",
+        annotations=_read_only_annotations,
+    )
+    def influence_map(
+        min_tier: int = 25,
+        min_value_usd: float = 1e9,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        """Issuers where a holder has a big stake AND currently sits on the board.
+
+        The strongest single output here, and the best place to start a governance or
+        counterparty question. It is the two-limb test from 12 CFR 225.2(e) — the Federal
+        Reserve's control presumptions — and its force comes from the **conjunction of two
+        independent filing types**: a Schedule 13D on one side, Form 3/4/5 board activity on the
+        other. A screener can give you either list; the pairing is the finding.
+
+        Requiring a *current* board seat also fixes a freshness problem. 13D carries no exit
+        obligation below 5%, so half the stakes on file predate 2020 and are last-known rather
+        than current — but board activity runs to the present, so a recent seat corroborates an
+        old declaration. Liberty Broadband's 26.1% of Charter was declared in 2014; its director
+        was seen in 2026.
+
+        ``min_tier`` is a presumption tier (10/15/25/50). ``min_value_usd`` filters on the 13F
+        size proxy so results are recognizable names rather than nano-caps.
+
+        Caveat to state if asked: percent_of_class is percent of the class covered by the filing,
+        NOT voting power — and several of the largest names are dual-class (Berkshire, the
+        Liberty complex, Carvana, Sea), where economic and voting stakes diverge.
+
+        Example: influence_map() returns Buffett/Berkshire 37% (seat 2026-05), Liberty
+        Broadband/Charter 26.1% (seat 2026-06), Huffman/Reddit 61.5% (seat 2026-06).
+        """
+        return _envelope(
+            engine.influence_map(min_tier=min_tier, min_value_usd=min_value_usd, limit=limit),
+            freshness,
+        )
 
     @mcp.tool(
         name="activist_convergence",
@@ -218,11 +259,17 @@ def create_ownership_mcp_server(
         citation. Abstains (abstained=True) when the issuer has no verified control edge —
         never fabricates a chain from sub-50% or unclassified stakes.
 
-        **Scope caveat:** the verified control chains in this dataset are all micro/nano-cap
-        issuers, so treat this as a small-cap governance/credit screen rather than a large-cap
-        tool. Large caps have no >=50% holder and correctly abstain.
+        **Scope, precisely.** Single-hop control reaches large caps: 20 of 825 controlled
+        issuers carry >=$10B of institutional ownership and 97 carry >=$1B. It is the
+        MULTI-HOP pyramids that are small-cap — those top out around $1.5B — so treat chain
+        *depth* as a small-cap governance signal while single-hop control is general-purpose.
+        Most large caps still have no >=50% holder and correctly abstain.
 
-        Example: control_chain("Income Opportunity Realty", "up") returns
+        Each step carries institutional_value_usd (a 13F size proxy, null for the ~25% of
+        issuers with no institutional coverage) so results can be ranked by materiality.
+
+        Examples: control_chain("TMUS") returns Deutsche Telekom -> T-Mobile US (74.3%, $95B).
+        control_chain("Income Opportunity Realty") returns the 3-hop pyramid
         Basic Capital -> American Realty (62%) -> Transcontinental (83%) -> Income Opportunity (85%).
         """
         return _envelope(

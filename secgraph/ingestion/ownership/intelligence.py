@@ -42,9 +42,18 @@ import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
+from secgraph.ingestion.ownership.campaign_timeline import ACTIVIST_FRANCHISES
 from secgraph.ingestion.ownership.graph_native_proof import is_custodial_hub
 
 logger = logging.getLogger(__name__)
+
+
+def _current_year() -> int:
+    """Today's year — the reference point for judging evidence age."""
+    from datetime import date
+
+    return date.today().year
+
 
 # Default traversal depth for chain/path queries. Deliberately bounded: control pyramids
 # and board-interlock paths deeper than this are vanishingly rare in the data and unbounded
@@ -110,12 +119,105 @@ def render_control_chain(
     return [{"cik": cik, "name": names.get(cik, cik), "pct": pct} for cik, pct in chain]
 
 
+# A supporting filing older than this makes an answer last-known rather than current. Chosen
+# because 13D carries no exit obligation once a holder drops below 5%, so an old percent has no
+# corroboration at all — and half the CONTROLS population predates 2020.
+STALE_EVIDENCE_YEARS = 5
+
+
+def evidence_age(
+    evidence: list[dict[str, Any]], as_of_year: int, stale_after: int = STALE_EVIDENCE_YEARS
+) -> dict[str, Any]:
+    """Filing years behind an answer, and whether the freshest is stale.
+
+    Presenting a percent without its date tells a reader a 2006 fact in the present tense —
+    Goldcorp's 75% of Wheaton is on file from 2006, and Goldcorp ceased to exist in 2019. The age
+    belongs in the answer so the reader can supply their own scepticism.
+    """
+    years = sorted(
+        {
+            int(str(e["filing_date"])[:4])
+            for e in evidence
+            if str(e.get("filing_date") or "")[:4].isdigit()
+        }
+    )
+    if not years:
+        return {"evidence_years": [], "stale_evidence": False, "stale_after_years": stale_after}
+    return {
+        "evidence_years": years,
+        # Judged on the NEWEST filing: one fresh confirmation redeems a chain with old links.
+        "stale_evidence": (as_of_year - max(years)) > stale_after,
+        "stale_after_years": stale_after,
+    }
+
+
 def coalition_of(components: list[set[str]], anchor_cik: str) -> set[str]:
     """The connected component (activist coalition) containing ``anchor_cik``, else empty."""
     for comp in components:
         if anchor_cik in comp:
             return comp
     return set()
+
+
+# Identities a franchise-token match cannot see, because the two names share no substring.
+# Each is an evidenced one-actor relationship, not a name-similarity guess — the same hard-key
+# discipline the rest of the graph follows:
+#
+#   GOLDSTEIN PHILLIP  -> Bulldog's principal, who also files personally.
+#   DIGIRAD CORP       -> renamed Star Equity Holdings; the two file on shared targets
+#                         (GYRO, SVVC), so they are one filer under two names.
+#
+# Keyed on the UPPERCASED filer name, checked before the franchise tokens so a mapped name wins.
+_AFFILIATE_IDENTITIES = {
+    "GOLDSTEIN PHILLIP": "BULLDOG INVESTORS",
+    "DIGIRAD CORP": "STAR EQUITY",
+    "STAR EQUITY FUND, LP": "STAR EQUITY",
+}
+
+
+def _actor_key(name: str) -> str | None:
+    """The distinct-actor key for a filer name, or None when no franchise/identity matches.
+
+    Franchise tokens are substrings, so they collapse "Bulldog Investors" /
+    "Bulldog Investors, LLP" / "Bulldog Investors General Partnership" — three CIKs of one firm
+    — onto one key automatically. ``_AFFILIATE_IDENTITIES`` covers the rest.
+    """
+    upper = str(name or "").upper().strip()
+    if upper in _AFFILIATE_IDENTITIES:
+        return _AFFILIATE_IDENTITIES[upper]
+    matched = next((f for f in ACTIVIST_FRANCHISES if f in upper), None)
+    if matched is None:
+        return None
+    return _AFFILIATE_IDENTITIES.get(matched, matched)
+
+
+def collapse_affiliates(names: list[str]) -> list[str]:
+    """Collapse affiliated filers to one entry per distinct actor.
+
+    A coalition roster counts CIKs, but one manager frequently files through several: "Bulldog
+    Investors" and "Bulldog Investors, LLP" are two CIKs, and Phillip Goldstein is Bulldog's
+    principal — three rows for one actor. Presenting 13 CIKs as 13 *actors* overstates the
+    coalition, and the first person who knows the names will say so.
+
+    Collapses on the franchise token (as ``distinct_franchises`` does for the convergence
+    screen), plus the ``_PRINCIPAL_TO_FIRM`` identities that a token match cannot see. Names
+    matching no known franchise pass through — they may be genuine one-off filers, and dropping
+    them would understate the coalition instead.
+
+    Note what is deliberately *not* collapsed: GAMCO and Marc Gabelli are separate filers with
+    separate 13D histories, so they stay distinct despite the family relationship.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        key = _actor_key(name)
+        if key is None:
+            out.append(name)
+            continue
+        if key not in seen:
+            seen.add(key)
+            out.append(name)
+    return out
 
 
 def chains_from_paths(
@@ -141,13 +243,26 @@ def chains_from_paths(
         if len(steps) < 2:
             continue
 
-        rendered = [{"cik": steps[0].get("cik"), "name": steps[0].get("name"), "pct": 0.0}]
+        # `institutional_value_usd` rides along on each step so a consumer can see the scale of
+        # the controlled issuer. Without it, Deutsche Telekom's 74.3% of T-Mobile ($95B) and a
+        # 74% stake in a $30 shell render identically.
+        rendered = [
+            {
+                "cik": steps[0].get("cik"),
+                "name": steps[0].get("name"),
+                "ticker": steps[0].get("ticker"),
+                "pct": 0.0,
+                "institutional_value_usd": steps[0].get("institutional_value_usd"),
+            }
+        ]
         for idx, step in enumerate(steps[1:]):
             rendered.append(
                 {
                     "cik": step.get("cik"),
                     "name": step.get("name"),
+                    "ticker": step.get("ticker"),
                     "pct": pcts[idx] if idx < len(pcts) else None,
+                    "institutional_value_usd": step.get("institutional_value_usd"),
                 }
             )
         chains.append(rendered)
@@ -253,7 +368,8 @@ class OwnershipIntelligenceEngine:
             WITH p, [r IN relationships(p) WHERE type(r) = 'CONTROLS'] AS ctrl
             WHERE size(ctrl) >= 1
             RETURN [n IN nodes(p) WHERE NOT (n:BeneficialOwner AND n <> head(nodes(p)))
-                    | {{cik: n.cik, name: coalesce(n.name, n.cik)}}] AS steps,
+                    | {{cik: n.cik, name: coalesce(n.name, n.cik), ticker: n.ticker,
+                         institutional_value_usd: n.institutional_value_usd}}] AS steps,
                    [r IN ctrl | r.percent_of_class] AS pcts,
                    [r IN ctrl | r.accession_number] AS accessions,
                    [r IN ctrl | r.filing_date] AS filing_dates,
@@ -322,6 +438,40 @@ class OwnershipIntelligenceEngine:
         ).data()
         return cast("list[dict[str, Any]]", rows)
 
+    def _coalition_top_targets(
+        self, session, member_ciks: list[str], limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """The coalition's 13D targets, largest first, named.
+
+        Without this the coalition reported *who* was in it but only CIKs for *what* they were
+        targeting, so the output read as opaque and the recognizable names were invisible. Ranked
+        by ``institutional_value_usd`` because the unranked view surfaced $15M closed-end funds
+        ahead of Deere and Occidental — the same names were always there, just unsorted.
+
+        ``value_usd`` is null for issuers with no 13F coverage; they sort last rather than being
+        treated as zero (absence means "not institutionally held", not "smallest").
+        """
+        rows = session.run(
+            """
+            MATCH (m:BeneficialOwner)-[:BENEFICIAL_OWNER_OF {filing_type:'13D'}]->(c:Company)
+            WHERE m.cik IN $ciks
+            WITH c, collect(DISTINCT m.name) AS filers
+            RETURN c.cik AS cik, c.ticker AS ticker, coalesce(c.name, c.cik) AS name,
+                   c.institutional_value_usd AS value_usd,
+                   toString(c.institutional_value_period) AS value_period,
+                   size(filers) AS coalition_filers
+            // Cypher has no NULLS LAST clause, and DESC sorts nulls FIRST (verified on 2026.05)
+            // — which would put every unknown-size issuer at the top. Sort on an explicit
+            // has-value flag so nulls land last: no 13F coverage means "unknown size", not
+            // "smallest", and it must not outrank a named $114B target.
+            ORDER BY value_usd IS NOT NULL DESC, value_usd DESC, name
+            LIMIT $limit
+            """,
+            ciks=member_ciks,
+            limit=limit,
+        ).data()
+        return cast("list[dict[str, Any]]", rows)
+
     # -- WIN 1: control chain ----------------------------------------------- #
     def control_chain(
         self,
@@ -381,6 +531,7 @@ class OwnershipIntelligenceEngine:
                 "chains": chains[:10],
                 "chain_count": len(chains),
                 "deepest_hops": max(len(c) - 1 for c in chains),
+                **evidence_age(evidence, as_of_year=_current_year()),
             },
             evidence=evidence,
             metadata=meta,
@@ -523,6 +674,7 @@ class OwnershipIntelligenceEngine:
         with self.driver.session(database=self.database) as session:
             diameter = self._coalition_diameter(session, member_ciks)
             evidence = self._coalition_evidence(session, member_ciks)
+            top_targets = self._coalition_top_targets(session, member_ciks)
 
         return OwnershipIntelligenceResult(
             anchor=anchor["name"],
@@ -530,9 +682,115 @@ class OwnershipIntelligenceEngine:
             abstained=False,
             result={
                 "members": sorted(m["name"] or m["cik"] for m in members),
+                # Both counts are reported. `member_count` is CIKs (what the traversal found);
+                # `distinct_actors` collapses affiliated vehicles of one manager, which is the
+                # number to quote to someone who knows the names. Reporting only the larger
+                # figure overstates the coalition; reporting only the smaller hides the
+                # filing-group structure, which is itself informative.
                 "member_count": len(members),
+                "distinct_actors": len(
+                    collapse_affiliates(sorted(m["name"] or m["cik"] for m in members))
+                ),
+                "distinct_actor_names": collapse_affiliates(
+                    sorted(m["name"] or m["cik"] for m in members)
+                ),
                 "diameter_hops": diameter,
+                # What the coalition actually targets, largest first. The members answer "who";
+                # this answers "on what" — and ranked, it leads with names a desk trades.
+                "top_targets": top_targets,
             },
+            evidence=evidence,
+            metadata=meta,
+        )
+
+    # -- WIN 4: influence map (stake + board seat) -------------------------- #
+    def influence_map(
+        self,
+        min_tier: int = 25,
+        min_value_usd: float = 1e9,
+        limit: int = 25,
+    ) -> OwnershipIntelligenceResult:
+        """Issuers where a holder has a presumption-tier stake **and** a current board seat.
+
+        The two-limb test from 12 CFR 225.2(e), and the one finding here that needs no hedging:
+        a >=25% holder who also sits on the board is influential by any reading. Its force comes
+        from the **conjunction of two independent filing types** — a Schedule 13D on one side,
+        Form 3/4/5 board activity on the other — which is exactly the join a filings database or a
+        single-table screener cannot do for you.
+
+        It also fixes the freshness problem that makes ``control_chain`` alone unconvincing. Half
+        the 13D population predates 2020 (13D carries no exit obligation below 5%, so a percent is
+        last-known), but the board limb runs to 2026. Requiring a *current* seat means the answer
+        is corroborated by recent activity even when the stake was declared a decade ago —
+        Liberty Broadband's 26.1% of Charter was filed in 2014 and its director was seen in 2026.
+
+        ``min_value_usd`` filters on the 13F size proxy so results are recognizable rather than
+        nano-cap noise; issuers with no institutional coverage are excluded rather than ranked
+        last, because an unranked row cannot honestly claim materiality.
+        """
+        meta = {
+            "strategy_path": "ownership_intelligence",
+            "traversal": "cypher_two_limb_join",
+            "min_tier": min_tier,
+            "min_value_usd": min_value_usd,
+            "legal_basis": "12 CFR 225.2(e) control presumptions (stake tier + board control)",
+        }
+        with self.driver.session(database=self.database) as session:
+            rows = session.run(
+                """
+                MATCH (b:BeneficialOwner)-[r:INFLUENCES]->(c:Company)
+                WHERE r.board_seat AND r.tier >= $min_tier
+                  AND c.institutional_value_usd >= $min_value
+                RETURN c.cik AS company_cik, c.ticker AS ticker,
+                       coalesce(c.name, c.cik) AS company,
+                       c.institutional_value_usd AS institutional_value_usd,
+                       b.cik AS owner_cik, coalesce(b.name, b.cik) AS owner,
+                       r.percent_of_class AS percent_of_class, r.tier AS tier,
+                       r.accession_number AS accession_number,
+                       toString(r.filing_date) AS filing_date,
+                       toString(r.board_seat_last_seen) AS board_seat_last_seen
+                ORDER BY institutional_value_usd DESC, percent_of_class DESC
+                LIMIT $limit
+                """,
+                min_tier=min_tier,
+                min_value=min_value_usd,
+                limit=limit,
+            ).data()
+
+        if not rows:
+            return OwnershipIntelligenceResult(
+                anchor=f"influence >= {min_tier}% with a board seat",
+                task_type="influence_map",
+                abstained=True,
+                result={
+                    "reason": "no_influence_with_board_seat",
+                    "note": (
+                        "No issuer meets both limbs at these thresholds. Requires INFLUENCES "
+                        "edges (materialize_influence_edges.py) and the 13F size proxy."
+                    ),
+                },
+                evidence=[],
+                metadata=meta,
+            )
+
+        # Evidence carries BOTH limbs — the 13D accession and the board-seat date. That pairing
+        # is the claim, so citing only the filing would understate what supports it.
+        evidence = [
+            {
+                "owner": r["owner"],
+                "company": r["company"],
+                "percent_of_class": r["percent_of_class"],
+                "accession_number": r["accession_number"],
+                "filing_date": r["filing_date"],
+                "board_seat_last_seen": r["board_seat_last_seen"],
+            }
+            for r in rows
+        ]
+        return OwnershipIntelligenceResult(
+            anchor=f"influence >= {min_tier}% with a current board seat",
+            task_type="influence_map",
+            abstained=False,
+            result={"cases": rows, "case_count": len(rows)},
             evidence=evidence,
             metadata=meta,
         )
@@ -621,6 +879,32 @@ class OwnershipIntelligenceEngine:
             note = r.result.get("note", "")
             return f"No graph-grounded answer for '{r.anchor}' ({reason}). {note}".strip()
 
+        if r.task_type == "influence_map":
+            lines = [
+                f"Stake + board seat — {r.result['case_count']} issuers "
+                f"({r.anchor}). Two independent filing types agreeing:",
+                "",
+                f"  {'TICKER':8} {'SIZE':>9}  {'STAKE':>6}  {'13D':6} {'SEAT':8} HOLDER",
+            ]
+            for c in r.result["cases"]:
+                size = (
+                    f"${c['institutional_value_usd'] / 1e9:.1f}B"
+                    if c.get("institutional_value_usd")
+                    else "—"
+                )
+                yr = (c.get("filing_date") or "")[:4]
+                seat = (c.get("board_seat_last_seen") or "")[:7]
+                lines.append(
+                    f"  {c.get('ticker') or c['company_cik']:8} {size:>9}  "
+                    f"{c['percent_of_class']:5.1f}%  {yr:6} {seat:8} {c['owner']}"
+                )
+            lines += [
+                "",
+                "Each row cites a Schedule 13D accession AND a Form 3/4/5 board date;"
+                " see Evidence.",
+            ]
+            return "\n".join(lines)
+
         if r.task_type == "control_chain":
             lines = [
                 f"Control chains through {r.anchor} "
@@ -631,6 +915,19 @@ class OwnershipIntelligenceEngine:
                     f"{s['name']} ({s['pct']:.0f}%)" if s["pct"] else s["name"] for s in chain
                 )
                 lines.append(f"  [{len(chain) - 1}h] {steps}")
+            # Age is part of the answer, not a footnote. Goldcorp's 75% of Wheaton was filed in
+            # 2006 and Goldcorp ceased to exist in 2019 — a reader shown "75%" with no date is
+            # being told a 2006 fact in the present tense.
+            if r.result.get("evidence_years"):
+                yrs = r.result["evidence_years"]
+                span = f"{min(yrs)}" if len(set(yrs)) == 1 else f"{min(yrs)}–{max(yrs)}"
+                lines.append(f"  Evidence filed: {span}.")
+            if r.result.get("stale_evidence"):
+                lines.append(
+                    "  ⚠ Newest supporting filing is over "
+                    f"{r.result['stale_after_years']} years old. 13D carries no exit obligation "
+                    "below 5%, so this is a LAST-KNOWN stake, not a confirmed current one."
+                )
             lines.append("Evidence (13D filings):")
             for e in r.evidence[:10]:
                 lines.append(

@@ -24,12 +24,14 @@ Idempotent: an existing cached zip is reused unless ``refresh=True``.
 
 from __future__ import annotations
 
+import calendar
 import io
 import logging
 import re
 import urllib.request
 import zipfile
 from collections.abc import Iterator
+from datetime import date
 from pathlib import Path
 
 from secgraph.core.config.constants import SEC_EDGAR_RATE_LIMIT
@@ -123,9 +125,36 @@ def _period_sort_key(period: str) -> tuple:
     return (int(year), int(quarter) * 3, 0)
 
 
-def select_quarters(available: dict[str, str], num_quarters: int) -> list[str]:
-    """Return the most-recent ``num_quarters`` period keys, newest first."""
-    ordered = sorted(available, key=_period_sort_key, reverse=True)
+def period_end_date(period: str) -> date:
+    """Last calendar day covered by a period key.
+
+    Lets ``--as-of`` bound selection: "the 12 quarters ending on or before D" is reproducible,
+    whereas "the most recent 12" silently means something different every week.
+    """
+    year, month, half = _period_sort_key(period)
+    if _FTD_RE.fullmatch(period):
+        # FTD files are half-months: 'a' covers the 1st-15th, 'b' the rest of the month.
+        if half == 0:
+            return date(year, month, 15)
+        return date(year, month, calendar.monthrange(year, month)[1])
+    # Quarter and date-range keys both resolve to a month end via _period_sort_key.
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+def select_quarters(
+    available: dict[str, str], num_quarters: int, as_of: date | str | None = None
+) -> list[str]:
+    """Return the most-recent ``num_quarters`` period keys, newest first.
+
+    ``as_of`` (a date or ``YYYY-MM-DD`` string) excludes periods ending after that date, so a
+    rebuild selects the same windows the reference build did instead of drifting forward as SEC
+    publishes new quarters.
+    """
+    keys = list(available)
+    if as_of is not None:
+        cutoff = date.fromisoformat(as_of) if isinstance(as_of, str) else as_of
+        keys = [k for k in keys if period_end_date(k) <= cutoff]
+    ordered = sorted(keys, key=_period_sort_key, reverse=True)
     return ordered[:num_quarters]
 
 
@@ -155,33 +184,72 @@ def download_dataset(
     subdir: str,
     num_quarters: int,
     refresh: bool = False,
+    as_of: date | str | None = None,
     log: logging.Logger | None = None,
 ) -> list[Path]:
-    """Discover + download the most recent ``num_quarters`` zips for a dataset."""
+    """Discover + download the most recent ``num_quarters`` zips for a dataset.
+
+    ``as_of`` bounds selection to periods ending on or before that date, so the staged window is
+    reproducible instead of sliding forward as SEC publishes.
+    """
     log = log or logger
     available = discover_quarter_zip_urls(landing_url)
     if not available:
         raise RuntimeError(f"No quarterly zip links found at {landing_url}")
-    selected = select_quarters(available, num_quarters)
-    log.info(f"  {len(available)} quarters available; selecting {selected}")
+    selected = select_quarters(available, num_quarters, as_of=as_of)
+    if not selected:
+        raise RuntimeError(
+            f"No periods at {landing_url} end on or before as-of {as_of}; "
+            f"available: {sorted(available)[:5]}..."
+        )
+    suffix = f" (as of {as_of})" if as_of else ""
+    log.info(f"  {len(available)} periods available; selecting {selected}{suffix}")
     return [
         download_quarter_zip(q, available[q], subdir, refresh=refresh, log=log) for q in selected
     ]
 
 
-def staged_zip_paths(subdir: str) -> list[Path]:
-    """Return cached quarter zips for a dataset family, newest period first."""
+def staged_zip_paths(
+    subdir: str, limit: int | None = None, as_of: date | str | None = None
+) -> list[Path]:
+    """Return cached zips for a dataset family, newest period first.
+
+    This globs the *whole* local cache, which is a reproducibility hazard: a machine that once
+    staged 16 quarters loads all 16, while a fresh clone that staged 12 loads 12 — same command,
+    different graph. ``limit`` and ``as_of`` bound the window so a loader reads exactly what was
+    intended rather than whatever download history happens to be on disk.
+
+    Args:
+        subdir: Dataset family (``form345`` / ``form13f`` / ``ftd``).
+        limit: Keep at most this many periods (newest first). None = no cap.
+        as_of: Drop periods ending after this date (``YYYY-MM-DD`` or a ``date``).
+    """
     cache_dir = get_ownership_data_dir(subdir)
     zips = list(cache_dir.glob(f"*_{subdir}.zip"))
 
+    def period_of(path: Path) -> str:
+        return path.name.rsplit(f"_{subdir}.zip", 1)[0]
+
     def sort_key(path: Path) -> tuple:
-        period = path.name.rsplit(f"_{subdir}.zip", 1)[0]
         try:
-            return _period_sort_key(period)
+            return _period_sort_key(period_of(path))
         except (ValueError, IndexError):
             return (0, 0, 0)
 
-    return sorted(zips, key=sort_key, reverse=True)
+    if as_of is not None:
+        cutoff = date.fromisoformat(as_of) if isinstance(as_of, str) else as_of
+        kept = []
+        for path in zips:
+            try:
+                if period_end_date(period_of(path)) <= cutoff:
+                    kept.append(path)
+            except (ValueError, IndexError, KeyError):
+                # Unparseable filename: keep it rather than silently dropping data.
+                kept.append(path)
+        zips = kept
+
+    ordered = sorted(zips, key=sort_key, reverse=True)
+    return ordered[:limit] if limit is not None else ordered
 
 
 def iter_tsv_rows(zip_path: Path, table: str) -> Iterator[dict[str, str]]:

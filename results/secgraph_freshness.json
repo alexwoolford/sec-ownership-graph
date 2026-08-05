@@ -1,54 +1,110 @@
 {
-  "as_of": "2026-07-24",
+  "as_of": "2026-06-30",
   "database": "secgraph",
   "layers": {
     "BENEFICIAL_OWNER_OF": {
-      "count": 57449,
-      "max_filing_date": "2026-07-24"
+      "count": 62705,
+      "max_filing_date": "2026-06-30"
     },
     "BeneficialOwner": {
-      "count": 15986,
+      "count": 17235,
       "max_filing_date": null
     },
     "CONTROLS": {
-      "count": 902,
+      "count": 1045,
       "max_filing_date": null
     },
     "CO_TARGETS": {
-      "count": 156,
+      "count": 203,
       "max_filing_date": null
     },
     "Company": {
-      "count": 8046,
+      "count": 8000,
       "max_filing_date": null
     },
     "DIRECTOR_OF": {
-      "count": 95123,
+      "count": 55507,
       "max_filing_date": null
     },
     "HOLDS": {
-      "count": 12595519,
+      "count": 6742154,
       "max_filing_date": "2026-05-29"
     },
+    "INFLUENCES": {
+      "count": 5396,
+      "max_filing_date": "2026-06-29"
+    },
     "Insider": {
-      "count": 137963,
+      "count": 78870,
       "max_filing_date": null
     },
     "InstitutionalManager": {
-      "count": 9595,
+      "count": 9137,
       "max_filing_date": null
     },
     "OFFICER_OF": {
-      "count": 88743,
+      "count": 43091,
       "max_filing_date": null
     },
     "SAME_ENTITY_AS": {
-      "count": 72,
+      "count": 94,
       "max_filing_date": null
     },
     "SHARES_DIRECTOR": {
-      "count": 32315,
+      "count": 14266,
       "max_filing_date": null
+    }
+  },
+  "provenance": {
+    "as_of_pinned": true,
+    "as_of_requested": "2026-06-30",
+    "control_figures": {
+      "path": "reference/control_figures.csv",
+      "source": "reference_csv"
+    },
+    "quarters_13f_requested": 4,
+    "quarters_345_requested": 16,
+    "staged_periods": {
+      "form13f": [
+        "01mar2026-31may2026",
+        "01dec2025-28feb2026",
+        "01sep2025-30nov2025",
+        "01jun2025-31aug2025"
+      ],
+      "form345": [
+        "2026q2",
+        "2026q1",
+        "2025q4",
+        "2025q3",
+        "2025q2",
+        "2025q1",
+        "2024q4",
+        "2024q3",
+        "2024q2",
+        "2024q1",
+        "2023q4",
+        "2023q3",
+        "2023q2",
+        "2023q1",
+        "2022q4",
+        "2022q3"
+      ],
+      "ftd": [
+        "202606b",
+        "202606a",
+        "202605b",
+        "202605a",
+        "202604b",
+        "202604a",
+        "202603b",
+        "202603a",
+        "202602b",
+        "202602a",
+        "202601b",
+        "202601a",
+        "202512b",
+        "202512a"
+      ]
     }
   }
 }

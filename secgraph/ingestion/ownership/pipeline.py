@@ -25,6 +25,7 @@ the orchestrator prints the phased plan and writes nothing.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import subprocess
 import sys
@@ -33,15 +34,33 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from secgraph.core.config.settings import ModelConfig
+from secgraph.ingestion.ownership.bulk_datasets import staged_zip_paths
+
 logger = logging.getLogger(__name__)
 
-_SCRIPT_DIR = Path(__file__).resolve().parents[3] / "scripts"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_SCRIPT_DIR = _REPO_ROOT / "scripts"
+
+# Committed reference inputs — these are what make a rebuild reproducible rather than
+# "whatever EDGAR served today". Absent on a first build; see scripts/export_control_figures.py.
+_CONTROL_FIGURES_CSV = _REPO_ROOT / "reference" / "control_figures.csv"
 
 # Exit code the density gate uses to signal NO-GO (see measure_ownership_density.py).
 _DENSITY_NO_GO_EXIT = 2
 
 # Default staging depth per form. FTD needs a deeper window to cover the CUSIP crosswalk.
-_QUARTERS_345 = 4
+#
+# _QUARTERS_345 = 16, not 4: the density gate needs enough Form 3/4/5 history for board coverage
+# to saturate. A Form 4 is filed per transaction, so one quarter surfaces only the directors who
+# happened to trade in it (~3-5 per issuer), well short of what the 60%-in-component threshold
+# needs. Four quarters NO-GOs the gate and aborts the build at step 5 of 14.
+#
+# Measured on 2026-08-03 (as-of 2026-06-30, 8,000-company universe): 12 quarters passes at
+# 61.3% in-component against a 60.0% threshold — only 1.3 points of margin, on the binding
+# criterion. 12 is the floor, not a safe default, so ship 16 and leave headroom for a universe
+# whose interlock density differs. Extra quarters cost ~10 MB and a few seconds each.
+_QUARTERS_345 = 16
 _QUARTERS_13F = 4
 _QUARTERS_FTD = 14
 
@@ -65,9 +84,40 @@ class Step:
     refresh_only: bool = False
 
 
-def _steps(database: str, *, refresh: bool) -> list[Step]:
-    """The full phased plan. ``--database`` is threaded onto every DB-touching child."""
+def _relative_csv_path() -> str:
+    """Control-figures path relative to the repo root, falling back to absolute.
+
+    Keeps the printed plan machine-independent. The fallback matters for tests, which point
+    ``_CONTROL_FIGURES_CSV`` at a tmp dir outside the repo.
+    """
+    try:
+        return str(_CONTROL_FIGURES_CSV.relative_to(_REPO_ROOT))
+    except ValueError:
+        return str(_CONTROL_FIGURES_CSV)
+
+
+def _steps(
+    database: str,
+    *,
+    refresh: bool,
+    quarters_345: int = _QUARTERS_345,
+    quarters_13f: int = _QUARTERS_13F,
+    extract_control: bool = False,
+    as_of: str | None = None,
+) -> list[Step]:
+    """The full phased plan. ``--database`` is threaded onto every DB-touching child.
+
+    ``quarters_345`` is caller-overridable because it is the one knob that decides whether the
+    density gate passes, and a NO-GO aborts the build at step 5 of 14.
+
+    ``extract_control`` forces the LLM extraction step even when committed control figures
+    exist — use it to fill in filings newer than the CSV.
+
+    ``as_of`` pins every acquisition step to a date, so the staged windows and the crawled
+    filings match a reference build instead of drifting forward with EDGAR.
+    """
     db = ["--database", database]
+    as_of_args = ["--as-of", as_of] if as_of else []
     plan: list[Step] = [
         # Phase 0 — standalone database + constraints (cold-start only).
         Step(
@@ -87,7 +137,8 @@ def _steps(database: str, *, refresh: bool) -> list[Step]:
             "download_ownership_data.py",
             "Phase 1 stage — download Form 3/4/5 bulk datasets",
             adds_execute=False,
-            extra_args=["--form", "345", "--quarters", str(_QUARTERS_345)]
+            extra_args=["--form", "345", "--quarters", str(quarters_345)]
+            + as_of_args
             + (["--refresh"] if refresh else []),
         ),
         Step(
@@ -114,13 +165,40 @@ def _steps(database: str, *, refresh: bool) -> list[Step]:
         Step(
             "load_beneficial_owners.py",
             "Phase 2a — load BeneficialOwner nodes + 13D/13G BENEFICIAL_OWNER_OF edges",
-            extra_args=[*db] + (["--refresh"] if refresh else []),
+            extra_args=[*db] + as_of_args + (["--refresh"] if refresh else []),
         ),
-        # Control extraction on 13D edges (needs Phase 2a); only_missing keeps it resumable.
-        Step(
-            "extract_control_edges.py",
-            "Derived — extract control-vs-stake figures for Schedule 13D edges",
-            extra_args=db,
+        # Control figures on 13D edges (needs Phase 2a). Two ways in:
+        #
+        #   1. reference/control_figures.csv, when committed — deterministic, no API key, and
+        #      identical on every rebuild. This is the default and the reproducible path.
+        #   2. extract_control_edges.py — one LLM call per 13D edge. Used when there is no CSV,
+        #      or via --extract-control to fill in filings newer than the CSV.
+        #
+        # Both write the same properties (control_class / percent_of_class / pct_verified), so
+        # materialize_control_edges downstream cannot tell them apart.
+        *(
+            [
+                Step(
+                    "load_control_figures.py",
+                    "Derived — apply committed control figures (deterministic, no LLM)",
+                    # Repo-relative, not absolute: the printed plan is copy-pasteable and does
+                    # not leak a machine-specific path into logs or docs.
+                    extra_args=[*db, "--csv", _relative_csv_path()],
+                )
+            ]
+            if _CONTROL_FIGURES_CSV.exists()
+            else []
+        ),
+        *(
+            [
+                Step(
+                    "extract_control_edges.py",
+                    "Derived — extract control-vs-stake figures for Schedule 13D edges (LLM)",
+                    extra_args=db,
+                )
+            ]
+            if extract_control or not _CONTROL_FIGURES_CSV.exists()
+            else []
         ),
         # Promote verified control to a traversable edge (+ CIK-identity bridge). Must follow
         # extract_control_edges: it reads control_class='control'. This is what makes the
@@ -136,12 +214,20 @@ def _steps(database: str, *, refresh: bool) -> list[Step]:
             "Derived — materialize CO_TARGETS activist co-targeting edges",
             extra_args=[*db] + (["--replace"] if refresh else []),
         ),
+        # Influence tiers (12 CFR 225.2(e)). Needs the 13D edges from Phase 2a AND the insider
+        # role edges from Phase 1, because each edge carries a board_seat flag joined on CIK.
+        Step(
+            "materialize_influence_edges.py",
+            "Derived — materialize INFLUENCES tiers + board-seat flag (12 CFR 225.2(e))",
+            extra_args=[*db] + (["--replace"] if refresh else []),
+        ),
         # Phase 2b — CUSIP crosswalk (needs FTD) then 13F institutional holdings.
         Step(
             "download_ownership_data.py",
             "Phase 2b stage — download FTD datasets (for the CUSIP crosswalk)",
             adds_execute=False,
             extra_args=["--form", "ftd", "--quarters", str(_QUARTERS_FTD)]
+            + as_of_args
             + (["--refresh"] if refresh else []),
         ),
         Step(
@@ -153,13 +239,22 @@ def _steps(database: str, *, refresh: bool) -> list[Step]:
             "download_ownership_data.py",
             "Phase 2b stage — download Form 13F datasets",
             adds_execute=False,
-            extra_args=["--form", "13f", "--quarters", str(_QUARTERS_13F)]
+            extra_args=["--form", "13f", "--quarters", str(quarters_13f)]
+            + as_of_args
             + (["--refresh"] if refresh else []),
         ),
         Step(
             "load_institutional_holdings.py",
             "Phase 2b — load InstitutionalManager nodes + HOLDS edges (13F)",
             # --replace on refresh: a changed crosswalk requires re-loading HOLDS cleanly.
+            extra_args=[*db] + (["--replace"] if refresh else []),
+        ),
+        # Derived size proxy. Must follow the 13F load — it sums HOLDS.value_usd. This is what
+        # makes every structural result rankable by materiality; without it a $95B control
+        # relationship and a $30 one render as peer rows.
+        Step(
+            "materialize_materiality.py",
+            "Derived — materialize the institutional-value size proxy on Company",
             extra_args=[*db] + (["--replace"] if refresh else []),
         ),
     ]
@@ -219,6 +314,246 @@ def _print_plan(steps: list[Step], *, database: str, refresh: bool, logger_insta
 
 
 # --------------------------------------------------------------------------- #
+# Preflight.
+# --------------------------------------------------------------------------- #
+# Free space needed for staged EDGAR data: 13F zips run ~87 MB each, FTD ~21 MB, plus up to
+# 600 KB per cached 13D body across ~14k accessions. 20 GB is comfortable headroom.
+_MIN_FREE_DISK_GB = 20.0
+
+# (label, property) pairs every loader MERGEs on. Mirrors schema/graph_schema.yaml's
+# `constraints:` block; the preflight checks these exist before a multi-hour load.
+_REQUIRED_CONSTRAINTS = (
+    ("Company", "cik"),
+    ("Insider", "cik"),
+    ("InstitutionalManager", "cik"),
+    ("BeneficialOwner", "owner_key"),
+)
+
+
+def preflight_checks(
+    *,
+    database: str,
+    driver=None,
+    refresh: bool = False,
+    log: logging.Logger | None = None,
+) -> list[str]:
+    """Check every precondition a full build needs. Returns a list of failure messages.
+
+    Every one of these used to surface only after minutes-to-hours of EDGAR crawling, as a
+    generic non-zero exit from a child script. Checking them up front is the difference between
+    a 5-second actionable error and a wasted overnight run. Read-only: no writes, no network.
+
+    ``driver`` is optional so the dry run can report everything checkable without credentials.
+    """
+    log = log or logger
+    failures: list[str] = []
+
+    # --- SEC fair access. A placeholder UA earns HTTP 403 on every request, which used to
+    # produce a green build over an empty graph (see edgar_client.SubmissionsFetchError).
+    from secgraph.ingestion.ownership.edgar_client import (
+        _user_agent,
+        is_placeholder_user_agent,
+    )
+
+    if is_placeholder_user_agent():
+        failures.append(
+            "SEC_USER_AGENT is unset or still the placeholder "
+            f"({_user_agent()!r}). SEC fair-access rejects generic agents with HTTP 403. "
+            "Set a real contact string, e.g.\n"
+            "        export SEC_USER_AGENT='Your Name your.email@domain.com'"
+        )
+    else:
+        log.info(f"  ✓ SEC_USER_AGENT: {_user_agent()}")
+
+    # --- Disk. The 13F layer alone writes millions of edges from ~350 MB of zips.
+    try:
+        import shutil
+
+        free_gb = shutil.disk_usage(Path.cwd()).free / 1024**3
+        if free_gb < _MIN_FREE_DISK_GB:
+            failures.append(
+                f"only {free_gb:.1f} GB free on the volume holding data/; "
+                f"a full build stages ~{_MIN_FREE_DISK_GB:.0f} GB of EDGAR data"
+            )
+        else:
+            log.info(f"  ✓ disk: {free_gb:.1f} GB free")
+    except OSError as exc:  # pragma: no cover - platform-dependent
+        log.warning(f"  ? could not check free disk space: {exc}")
+
+    # --- Control figures: either the committed CSV, or a working LLM path. Checked here
+    # because extract_control_edges is step 8 of 14 — hours in — and dies on a bare import.
+    if _CONTROL_FIGURES_CSV.exists():
+        log.info(f"  ✓ control figures: {_CONTROL_FIGURES_CSV}")
+    else:
+        if importlib.util.find_spec("openai") is None:
+            failures.append(
+                f"no committed control figures at {_CONTROL_FIGURES_CSV} and the 'openai' "
+                "package is not installed, so control extraction cannot run.\n"
+                '        Install it with:  pip install -e ".[dev,llm]"\n'
+                "        (the documented '[dev]' extra deliberately omits openai)"
+            )
+        else:
+            from secgraph.core.config.settings import get_settings
+
+            if not get_settings().openai_api_key:
+                failures.append(
+                    f"no committed control figures at {_CONTROL_FIGURES_CSV} and "
+                    "OPENAI_API_KEY is not set, so control extraction cannot run.\n"
+                    "        Set OPENAI_API_KEY in .env, or supply the CSV."
+                )
+            else:
+                log.info("  ✓ control extraction: openai + OPENAI_API_KEY available")
+
+    # --- Neo4j. Only checkable with a driver; the dry run says so rather than guessing.
+    if driver is None:
+        log.info("  ? Neo4j checks skipped (no driver in dry-run mode)")
+        return failures
+
+    try:
+        with driver.session(database="system") as session:
+            session.run("SHOW DATABASES YIELD name RETURN count(*) AS n").consume()
+        log.info("  ✓ Neo4j reachable (system database)")
+    except Exception as exc:
+        failures.append(f"cannot reach Neo4j's system database: {exc}")
+        return failures  # everything below needs a working connection
+
+    # Named databases need Enterprise. Only relevant on a cold start, which creates one.
+    if not refresh:
+        try:
+            with driver.session(database="system") as session:
+                rows = session.run(
+                    "SHOW DATABASES YIELD name RETURN collect(name) AS names"
+                ).single()
+                existing = set(rows["names"] or [])
+            if database not in existing:
+                edition = _server_edition(driver)
+                if edition and edition != "enterprise":
+                    failures.append(
+                        f"database '{database}' does not exist and this server is "
+                        f"{edition} edition, which cannot CREATE DATABASE.\n"
+                        "        Use Neo4j Enterprise (or the neo4j:enterprise Docker image), "
+                        "or target the existing database:\n"
+                        "          make build-exec DB=neo4j   (with NEO4J_DATABASE=neo4j)"
+                    )
+                else:
+                    log.info(f"  ✓ database '{database}' will be created (enterprise edition)")
+            else:
+                log.info(f"  ✓ database '{database}' already exists")
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(f"  ? could not inspect databases: {exc}")
+
+    # Uniqueness constraints on an *existing* target database. Phase 0 creates them, but it is
+    # `CREATE DATABASE ... IF NOT EXISTS` — so pointing at a database that already exists but was
+    # never initialised skips them silently. Without them every `MERGE (i:Insider {cik})` in a
+    # 5,000-row batch does a full label scan: measured at ~500 edges/min instead of ~50,000, i.e.
+    # hours of apparent progress on a load that should take minutes.
+    if database in existing:
+        try:
+            with driver.session(database=database) as session:
+                found = {
+                    tuple(r["labelsOrTypes"] or []) + tuple(r["properties"] or [])
+                    for r in session.run(
+                        "SHOW CONSTRAINTS YIELD labelsOrTypes, properties "
+                        "RETURN labelsOrTypes, properties"
+                    )
+                }
+            missing = [
+                f"{label}.{prop}"
+                for label, prop in _REQUIRED_CONSTRAINTS
+                if (label, prop) not in found
+            ]
+            if missing:
+                failures.append(
+                    f"database '{database}' exists but is missing uniqueness constraint(s): "
+                    f"{', '.join(missing)}.\n"
+                    "        Loaders MERGE on these keys, so without them every batch does a "
+                    "full label scan (hours instead of minutes).\n"
+                    f"        Fix: python scripts/ownership_create_database.py "
+                    f"--database {database} --execute"
+                )
+            else:
+                log.info(f"  ✓ constraints present ({len(_REQUIRED_CONSTRAINTS)} uniqueness)")
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(f"  ? could not inspect constraints: {exc}")
+
+    # GDS is needed on BOTH sides: the `graphdatascience` Python client and the server plugin.
+    # Checking only the server let the density gate die on a bare ImportError at step 5 of 14.
+    if importlib.util.find_spec("graphdatascience") is None:
+        failures.append(
+            "the 'graphdatascience' Python client is not installed, but the density gate "
+            "needs it.\n"
+            '        Fix: pip install -e ".[dev,llm]"'
+        )
+    else:
+        log.info("  ✓ graphdatascience client installed")
+
+    # gds.version() must be called on a *user* database — it is unavailable on `system`. On a
+    # cold start the target database does not exist yet, so probe any existing user database.
+    existing = _existing_databases(driver)
+    gds_db = database if database in existing else _any_user_database(existing)
+    if gds_db is None:
+        log.warning("  ? GDS check skipped (no user database available to probe)")
+        return failures
+    try:
+        with driver.session(database=gds_db) as session:
+            version = session.run("RETURN gds.version() AS v").single()["v"]
+        log.info(f"  ✓ GDS {version} (probed on '{gds_db}')")
+    except Exception:
+        failures.append(
+            "the GDS plugin is not available, but the density gate needs gds.wcc.write.\n"
+            "        Install Graph Data Science on the server "
+            "(Docker: NEO4J_PLUGINS='[\"graph-data-science\"]')."
+        )
+
+    return failures
+
+
+def _any_user_database(existing: set[str]) -> str | None:
+    """Pick a user database to probe for GDS. Prefers ``neo4j``; never ``system``."""
+    if "neo4j" in existing:
+        return "neo4j"
+    candidates = sorted(existing - {"system"})
+    return candidates[0] if candidates else None
+
+
+def _existing_databases(driver) -> set[str]:
+    """Names of databases on this server; empty set if it cannot be determined."""
+    try:
+        with driver.session(database="system") as session:
+            row = session.run("SHOW DATABASES YIELD name RETURN collect(name) AS names").single()
+        return set(row["names"] or [])
+    except Exception:  # pragma: no cover - defensive
+        return set()
+
+
+def _server_edition(driver) -> str | None:
+    """Server edition ('enterprise' / 'community'), or None if undeterminable."""
+    try:
+        with driver.session(database="system") as session:
+            row = session.run(
+                "CALL dbms.components() YIELD edition RETURN edition LIMIT 1"
+            ).single()
+        return (row["edition"] or "").lower() or None
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def _report_preflight(failures: list[str], *, log: logging.Logger) -> bool:
+    """Log preflight results. Returns True when the build may proceed."""
+    if not failures:
+        log.info("✓ preflight passed")
+        return True
+    log.error("")
+    log.error("=" * 70)
+    log.error(f"✗ PREFLIGHT FAILED — {len(failures)} issue(s). Nothing has been written.")
+    log.error("=" * 70)
+    for i, msg in enumerate(failures, 1):
+        log.error(f"  {i}. {msg}")
+    log.error("=" * 70)
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # Freshness manifest.
 # --------------------------------------------------------------------------- #
 _FRESHNESS_QUERY = """
@@ -237,30 +572,108 @@ CALL {
   UNION ALL MATCH ()-[r:CONTROLS]->() RETURN 'CONTROLS' AS k, count(r) AS c, null AS max_date
   UNION ALL MATCH ()-[r:SAME_ENTITY_AS]->() RETURN 'SAME_ENTITY_AS' AS k, count(r) AS c, null AS max_date
   UNION ALL MATCH ()-[r:CO_TARGETS]->() RETURN 'CO_TARGETS' AS k, count(r) AS c, null AS max_date
+  UNION ALL MATCH ()-[r:INFLUENCES]->()
+            RETURN 'INFLUENCES' AS k, count(r) AS c, toString(max(r.filing_date)) AS max_date
 }
 RETURN k, c, max_date
 """
 
 
-def collect_freshness(driver, database: str) -> dict[str, Any]:
+def collect_provenance(
+    *,
+    as_of: str | None,
+    quarters_345: int,
+    quarters_13f: int,
+) -> dict[str, Any]:
+    """Record what this build was built *from*, not just what came out of it.
+
+    Without this a cloner who gets different numbers cannot tell drift from breakage. The
+    freshness manifest already reported output counts; the missing half is the inputs — the
+    pin date, the staged windows, and whether the control layer came from a committed file or
+    a live LLM run.
+    """
+    staged: dict[str, list[str]] = {}
+    for subdir in ("form345", "form13f", "ftd"):
+        try:
+            paths = staged_zip_paths(subdir, as_of=as_of)
+        except OSError:  # pragma: no cover - cache dir may not exist on a partial build
+            paths = []
+        staged[subdir] = [p.name.rsplit(f"_{subdir}.zip", 1)[0] for p in paths]
+
+    return {
+        "as_of_requested": as_of,
+        "as_of_pinned": as_of is not None,
+        "quarters_345_requested": quarters_345,
+        "quarters_13f_requested": quarters_13f,
+        "staged_periods": staged,
+        "control_figures": (
+            {
+                "source": "reference_csv",
+                "path": str(_CONTROL_FIGURES_CSV.relative_to(_REPO_ROOT)),
+            }
+            if _CONTROL_FIGURES_CSV.exists()
+            else {"source": "llm_extraction", "model": ModelConfig.LLM_MINI_MODEL}
+        ),
+    }
+
+
+def collect_freshness(
+    driver, database: str, provenance: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Read per-layer row counts + max filing dates for the freshness manifest (read-only).
 
     The served answer's "as of" is the newest 13D/13G ``filing_date`` — the one trustworthy
-    dated layer (1994→present). Board/insider layers are a keep-latest snapshot, so no date is
-    claimed for them.
+    dated layer. Board/insider layers are a keep-latest snapshot, so no date is claimed for them.
     """
     with driver.session(database=database) as session:
         rows = session.run(_FRESHNESS_QUERY).data()
     layers = {r["k"]: {"count": r["c"], "max_filing_date": r["max_date"]} for r in rows}
     as_of = layers.get("BENEFICIAL_OWNER_OF", {}).get("max_filing_date")
-    return {"database": database, "as_of": as_of, "layers": layers}
+    manifest: dict[str, Any] = {"database": database, "as_of": as_of, "layers": layers}
+    if provenance is not None:
+        manifest["provenance"] = provenance
+    return manifest
 
 
-def write_freshness_manifest(driver, database: str, out_path: Path) -> dict[str, Any]:
+def provenance_line(manifest_path: Path | None = None) -> str:
+    """One markdown line stating what data a published figure came from.
+
+    Shared by the demo memos. Without it, a cloner whose numbers differ cannot tell expected
+    drift (a different ``--as-of``, a wider staging window) from a broken build.
+    """
+    import json
+
+    path = manifest_path or (Path("results") / "secgraph_freshness.json")
+    if not path.exists():
+        return (
+            f"> **Provenance unavailable** — `{path}` is missing, so the data window behind these "
+            "figures is unrecorded. Re-run the build to regenerate it."
+        )
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return f"> **Provenance unreadable** — `{path}` could not be parsed."
+
+    prov = manifest.get("provenance") or {}
+    staged = (prov.get("staged_periods") or {}).get("form345") or []
+    window = f"{staged[-1]}–{staged[0]}" if staged else "unknown"
+    return (
+        f"> **Provenance.** Data as of `{manifest.get('as_of', 'unknown')}` · "
+        f"staging pinned to `{prov.get('as_of_requested') or 'not pinned'}` · "
+        f"Form 3/4/5 window `{window}` ({len(staged)} quarters) · "
+        f"control figures from `{(prov.get('control_figures') or {}).get('source', 'unknown')}`. "
+        "Figures below are specific to this window: a rebuild with a different `--as-of` will "
+        "legitimately differ."
+    )
+
+
+def write_freshness_manifest(
+    driver, database: str, out_path: Path, provenance: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Compute and persist the freshness manifest; returns the manifest dict."""
     import json
 
-    manifest = collect_freshness(driver, database)
+    manifest = collect_freshness(driver, database, provenance=provenance)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     logger.info("wrote freshness manifest %s (as_of=%s)", out_path, manifest["as_of"])
@@ -277,20 +690,36 @@ def build_secgraph(
     execute: bool = False,
     driver=None,
     freshness_path: Path | None = None,
+    quarters_345: int = _QUARTERS_345,
+    quarters_13f: int = _QUARTERS_13F,
+    extract_control: bool = False,
+    as_of: str | None = None,
     logger_instance: logging.Logger | None = None,
 ) -> bool:
     """Run the phased secgraph build (or refresh). Returns True on success.
 
     Dry-run by default: without ``execute`` it prints the plan and returns True. On
-    ``execute``, runs each phase in order, aborting on the first non-zero exit; a density-gate
-    NO-GO (exit ``_DENSITY_NO_GO_EXIT``) aborts fail-closed. When a ``driver`` is supplied and
-    the run succeeds, writes the freshness manifest.
+    ``execute``, runs the preflight and then each phase in order, aborting on the first non-zero
+    exit; a density-gate NO-GO (exit ``_DENSITY_NO_GO_EXIT``) aborts fail-closed. When a
+    ``driver`` is supplied and the run succeeds, writes the freshness manifest.
     """
     log = logger_instance or logger
-    steps = _steps(database, refresh=refresh)
+    steps = _steps(
+        database,
+        refresh=refresh,
+        quarters_345=quarters_345,
+        quarters_13f=quarters_13f,
+        extract_control=extract_control,
+        as_of=as_of,
+    )
 
     if not execute:
         _print_plan(steps, database=database, refresh=refresh, logger_instance=log)
+        log.info("")
+        log.info("PREFLIGHT (what the real run will require):")
+        _report_preflight(
+            preflight_checks(database=database, driver=driver, refresh=refresh, log=log), log=log
+        )
         return True
 
     mode = "REFRESH" if refresh else "BUILD"
@@ -298,17 +727,34 @@ def build_secgraph(
     log.info("RUNNING SECGRAPH %s — database '%s'", mode, database)
     log.info("=" * 70)
 
+    # Fail in seconds rather than after hours of EDGAR crawling.
+    log.info("")
+    log.info("PREFLIGHT:")
+    if not _report_preflight(
+        preflight_checks(database=database, driver=driver, refresh=refresh, log=log), log=log
+    ):
+        return False
+
     started = time.time()
     for step in steps:
         code = _run_step(step, execute=execute, logger_instance=log)
         if code != 0:
             if step.gate and code == _DENSITY_NO_GO_EXIT:
+                deeper = quarters_345 + 4
                 log.error("")
                 log.error("=" * 70)
                 log.error("✗ DENSITY GATE NO-GO — aborting build fail-closed.")
-                log.error("  The insider layer is too sparse to support the graph-native")
-                log.error("  wins. Stage more quarters (download_ownership_data --form 345")
-                log.error("  --quarters N) and re-run before loading downstream layers.")
+                log.error("  The insider layer is too sparse to support the graph-native wins.")
+                log.error("  This build staged %d quarters of Form 3/4/5.", quarters_345)
+                log.error("")
+                log.error("  Board coverage saturates with history: a Form 4 is filed per")
+                log.error("  transaction, so a quarter only surfaces directors who traded in it.")
+                log.error("  Stage more and re-run:")
+                log.error("")
+                log.error("    python scripts/build_secgraph.py --database %s \\", database)
+                log.error("        --quarters-345 %d --execute", deeper)
+                log.error("")
+                log.error("  Staged zips are cached, so re-running only fetches the new quarters.")
                 log.error("=" * 70)
             else:
                 log.error("Aborting: step failed — %s (exit %d)", step.script, code)
@@ -323,7 +769,21 @@ def build_secgraph(
     if driver is not None:
         out = freshness_path or (Path("results") / "secgraph_freshness.json")
         try:
-            write_freshness_manifest(driver, database, out)
+            write_freshness_manifest(
+                driver,
+                database,
+                out,
+                provenance=collect_provenance(
+                    as_of=as_of, quarters_345=quarters_345, quarters_13f=quarters_13f
+                ),
+            )
         except Exception as exc:  # pragma: no cover - manifest is best-effort
             log.warning("could not write freshness manifest: %s", exc)
+        if as_of is None:
+            log.warning("")
+            log.warning(
+                "⚠ built without --as-of, so the staged windows tracked today's date. "
+                "A later rebuild will not reproduce these counts; pass "
+                "--as-of YYYY-MM-DD to pin them."
+            )
     return True

@@ -4,40 +4,44 @@
 target, who operates as a coalition, and who really controls an issuer.** Built on Neo4j. Every
 answer cites an SEC accession number, and abstains when the data doesn't support one.
 
-Data: Schedule 13D/13G (beneficial ownership, 1994→present), Form 3/4/5 (insiders and directors),
-Form 13F (institutional holdings). Straight from EDGAR — no paid data vendor.
+Data: Schedule 13D/13G (beneficial ownership), Form 3/4/5 (insiders and directors), Form 13F
+(institutional holdings). Straight from EDGAR — no paid data vendor. Depth per layer, and what
+that does and doesn't support, is in [Honest limits](#honest-limits).
 
 ---
 
 ## The demo in one question
 
-> *"Which companies have had multiple activists show up recently — and who moved first?"*
+> *"Who can actually move this company — and can you prove it from two independent filings?"*
 
 ```
 $ make demo
 
-Activist convergence — 8 issuers:
+Stake + board seat — issuers where a holder clears a Fed control-presumption tier
+AND currently sits on the board. Two independent filing types agreeing:
 
-  MNRO — MONRO, INC. (2 franchises within 96 days)
-     2025-08-01  GAMCO INVESTORS, INC. ET AL 4.0%
-     2025-11-05  ICAHN CARL C 14.79%
-  ...
-
-Ownership timeline — MONRO, INC.:
-  2025-01-23  13G           DIMENSIONAL FUND ADVISORS LP (passive_index)
-  2025-04-29  13G           BlackRock, Inc. (passive_index)
-  2025-05-15  13G           NOMURA HOLDINGS INC (custodian)
-  2025-08-01  13D     4.0%  GAMCO INVESTORS, INC. ET AL (activist)
-  2025-11-05  13D   14.79%  ICAHN CARL C (activist)
-
-First mover: GAMCO INVESTORS, INC. ET AL on 2025-08-01 at 4.0%
-  → ICAHN CARL C followed 96 days later at 14.79%
+  TICKER        SIZE   STAKE  13D    SEAT     HOLDER
+  BRK-B      $479.9B   37.0%  2024   2026-05  BUFFETT WARREN E
+  TMUS        $92.6B   74.3%  2013   2025-10  DEUTSCHE TELEKOM AG
+  CHTR        $22.4B   26.1%  2014   2026-06  Liberty Broadband Corp
+  RDDT        $20.5B   61.5%  2024   2026-06  Huffman Steve Ladd
 ```
 
-Note what the graph does that a filings search cannot: it separates the two *activists* from the
-index money and the custodian **inside the same filing type**, and it puts them in order.
+The stake comes from a Schedule 13D; the board seat comes from Form 3/4/5. A screener sells you
+either list — the *pairing* is the finding, and it is the join a single-table query cannot do for
+you. Note the two date columns: Liberty Broadband declared 26.1% of Charter in **2014**, and its
+director was on file in **2026**. A 13D has no exit obligation below 5%, so an old stake proves
+nothing alone; the current seat is what corroborates it.
 
-**→ Full walkthrough: [`docs/demo_script_activist_desk.md`](docs/demo_script_activist_desk.md)**
+And when there is nothing to say, it says so — ten of ten mega-caps abstain on control:
+
+```
+$ control_chain("AAPL")
+No graph-grounded answer for 'Apple Inc.' (no_verified_control_chain).
+Issuer has no >=50% verified 13D control edge on a chain.
+```
+
+**→ Full walkthrough: [`docs/demo_script_governance_desk.md`](docs/demo_script_governance_desk.md)**
 (five questions, ~10 minutes, including what this *cannot* tell you.)
 
 ---
@@ -47,7 +51,7 @@ index money and the custodian **inside the same filing type**, and it puts them 
 Three questions need a relationship followed to a depth the data decides — one declarative Cypher
 pattern, executed next to the data:
 
-| Question | Cypher | Why not SQL |
+| Question | Cypher | Why a traversal |
 | --- | --- | --- |
 | Who ultimately controls this issuer? | `(root)-[:CONTROLS\|SAME_ENTITY_AS*1..N]->(target)` | chain depth is unknown up front |
 | Who operates as a coalition with X? | `(seed)-[:CO_TARGETS*0..N]-(m)` | the component is emergent, not a fixed join |
@@ -55,39 +59,70 @@ pattern, executed next to the data:
 
 Stated precisely, because overclaiming here loses technical audiences: **SQL cannot express a
 single query whose traversal depth is decided by the data.** A warehouse can still reach the same
-answers with a recursive CTE or by looping in application code. The advantage is one indexed
-declarative pattern next to the data — not that the answer is unobtainable elsewhere.
+answers with a recursive CTE. The advantage is one indexed declarative pattern next to the data —
+not that the answer is unobtainable elsewhere.
 
-`scripts/prove_graph_native_wins.py` runs the graph traversal and the flat-SQL equivalent
-side by side and cross-checks that they agree (`make prove`).
+`make prove` runs both legs for real — Cypher inside Neo4j, and genuine `WITH RECURSIVE` CTEs over
+identical rows — and **publishes the agreement, with timings for both**. At this scale SQL is
+*faster* on the chain (~0.7 ms vs ~13 ms) and slower on the path (~20 ms vs ~1 ms). Anyone
+evaluating this should read those numbers before the prose.
 
 ---
 
 ## Quickstart
 
 ```bash
-# 1. Install
-pip install -e ".[dev]"
-cp .env.sample .env         # fill in NEO4J_PASSWORD
+# 1. Install (project-local venv — required for the MCP launcher)
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev,llm]"   # or: make install
+cp .env.sample .env              # fill in NEO4J_PASSWORD and SEC_USER_AGENT
 
-# 2. Point at a graph. Either build it (hours — downloads from EDGAR):
-make build                  # dry-run: prints the full phased plan, writes nothing
+# 2. Check preconditions in seconds, before committing to a multi-hour build
+make preflight
+
+# 3. Point at a graph. Either build it (hours — downloads from EDGAR):
+make build                  # dry-run: prints the full phased plan + preflight, writes nothing
 make build-exec             # for real
 
-# 3. Ask it things
+# 4. Ask it things
 make demo                   # the activist convergence screen
 make prove                  # graph vs SQL, head to head
-make serve                  # curated MCP tools over stdio
+make smoke-mcp              # curated tool catalog + demo queries against the live DB
+make serve                  # curated MCP tools over stdio (or use Cursor — see below)
 ```
 
-`make serve` exposes seven read-only tools to Claude Desktop or any MCP client (see
-[`.mcp.json`](.mcp.json)) — `activist_convergence`, `campaign_timeline`, `activist_coalition`,
-`ownership_snapshot`, `control_chain`, `board_interlock_path`, `get_secgraph_schema`. Curated
-tools, not raw text2cypher: there is no Cypher passthrough and no write path, so the scrubs and
-thresholds that make the answers correct cannot be bypassed.
+### What a build needs
 
-Requires Neo4j 5.x with GDS. A named database needs Enterprise or Aura; on Community, set
-`NEO4J_DATABASE=neo4j`.
+| | |
+| --- | --- |
+| **Neo4j** | **Enterprise** (or Docker `neo4j:enterprise`) **+ the GDS plugin**. Phase 0 runs `CREATE DATABASE`; the density gate runs `gds.wcc.write`. Community/Aura expose one database — use `make build-exec DB=neo4j`. |
+| **`SEC_USER_AGENT`** | **Required.** SEC fair access rejects generic agents with HTTP 403. The built-in default is a placeholder on the reserved domain `example.com`; `make preflight` refuses to start until you set a real contact string. |
+| **OpenAI key** | Only if `reference/control_figures.csv` is absent. Control extraction is the one LLM step; with the committed figures, a build needs no key at all. |
+| **Time & disk** | Several hours, ~20 GB. Dominated by the ~8,000-issuer 13D/G crawl and the 13F load, both bounded by SEC's 10 req/s ceiling. |
+
+`make preflight` checks every one of these. Each used to surface only after minutes-to-hours of
+crawling, as a generic non-zero exit from a child script.
+
+### Curated MCP (Cursor / Claude Desktop)
+
+Seven read-only tools — `activist_convergence`, `campaign_timeline`, `activist_coalition`,
+`ownership_snapshot`, `control_chain`, `board_interlock_path`, `get_secgraph_schema`. Curated,
+not raw text2cypher: no Cypher passthrough and no write path, so the scrubs and thresholds that
+make the answers correct cannot be bypassed.
+
+**Cursor:** open this repo; [`.cursor/mcp.json`](.cursor/mcp.json) uses `${workspaceFolder}` and
+[`scripts/run_ownership_mcp.sh`](scripts/run_ownership_mcp.sh) so a clone needs no path edits
+after `.venv` exists. Enable **secgraph-ownership**, reload MCP, then ask the demo questions in
+natural language. If a user-level `~/.cursor/mcp.json` also defines `secgraph-ownership`, point
+it at the same launcher (bare `python scripts/serve_ownership_mcp.py` fails outside the venv).
+
+**Claude Desktop:** root [`.mcp.json`](.mcp.json) is the same shape; Claude does not expand
+`${workspaceFolder}` — set `command` once to the absolute path of
+`scripts/run_ownership_mcp.sh` (the launcher still finds `.venv` relative to the repo).
+
+`make smoke-mcp` proves the tool catalog and the demo queries against a live `secgraph` DB
+without an MCP client.
+
 
 ---
 
@@ -120,15 +155,38 @@ Read these before demoing — they are part of what makes the rest credible.
 
 - **No prediction.** The alpha question was tested and came back null. Efficient markets; 13Ds are
   public. This is a structural and temporal map, not a signal.
-- **No materiality data.** No market cap, size or financials on any issuer, so results cannot be
-  ranked by "does this matter." Bring your own universe filter. *Largest known gap.*
+- **Size is a proxy, not a market cap.** `Company.institutional_value_usd` sums one quarter of
+  13F holdings so results *can* be ranked by materiality — but it measures **free float** (so it
+  understates concentrated-ownership issuers, conservatively), is **null for ~25% of the universe**
+  (no institutional coverage — which is itself a signal, not a zero), and counts ETFs. There is
+  still no revenue, assets or true market cap. Bring your own universe filter for anything
+  fundamental.
 - **Activist screens trade recall for precision.** Gated to a curated franchise list; ungated
   detection is dominated by micro-cap founders crossing 5% and by filing-group artifacts (one
   manager filing through seven affiliated vehicles). First-time activists are missed by design.
-- **Only 13D/13G dates are a time series.** Board and officer edges are a 2023–2026 keep-latest
+- **Only 13D/13G dates are a time series.** Board and officer edges are a keep-latest
   snapshot; 13F has a 2024 coverage step-up. Don't read trends into them.
-- **Control chains are a small-cap instrument.** Every verified ≥50% chain in this dataset is a
-  micro/nano-cap issuer. A real governance screen; not a large-cap feature.
+- **13D/13G history is capped, so "1994→present" holds only for light filers.** The crawl reads
+  each issuer's `filings.recent` (~1,000 most recent filings) and takes at most 40 Schedule
+  13D/G per subject. For a company that files hundreds of Form 4s a year, `recent` may reach back
+  only a year or two, and its older 13D/Gs are invisible. Small caps — where the control chains
+  are — get the full history; mega caps do not.
+- **At this scale, a warehouse is a real alternative.** The three wins run on ~1,100 derived
+  edges, measured depth is overwhelmingly 1-2 hops with a maximum of 3, and a recursive CTE
+  answers all three in single-digit milliseconds. The honest case for a graph here is authoring
+  cost per *new* question, GDS algorithms with no SQL equivalent (Louvain, betweenness), and the
+  curated serving layer — **not** tractability. Tractability would only become the argument at a
+  far larger universe than 8,000 tickered issuers.
+- **Rebuilds drift, by construction.** The staging window resolves against the run date, and
+  EDGAR keeps accruing filings, so a rebuild today will not reproduce the figures below exactly.
+  New 13Ds can also *remove* a convergence hit, because the screen measures a total span rather
+  than a rolling window. Compare against `results/secgraph_freshness.json` (`as_of`) before
+  concluding something broke.
+- **Chain *depth* is a small-cap signal; single-hop control is not.** 20 of 825 controlled issuers
+  carry ≥$10B of institutional ownership — Deutsche Telekom holds 74.3% of T-Mobile US, GE held
+  62.6% of Baker Hughes. But the **multi-hop** pyramids top out near $1.5B, so read a deep chain as
+  a small-cap governance screen and a single-hop one as general-purpose. Most large caps have no
+  ≥50% holder at all and correctly abstain.
 - **Board-interlock path *existence* is uninformative.** Measured: every well-connected pair links
   within 4 hops. The named bridging director is the signal, not the connection.
 - **CIK-keyed only.** Deliberately conservative — understates family/affiliate structure rather
@@ -139,9 +197,13 @@ Read these before demoing — they are part of what makes the rest credible.
 ## Development
 
 ```bash
-make test     # unit suite: fully mocked, no database needed
-make check    # lint + tests, as CI runs them
+make test        # unit suite: fully mocked, no database needed
+make check       # lint + tests (note: `make lint` rewrites source via ruff --fix)
+make preflight   # verify build preconditions against your Neo4j
 ```
+
+There is no CI. `make check` is the stand-in; `pre-commit install` gets ruff + gitleaks on
+commit.
 
 ## License
 

@@ -12,7 +12,10 @@ Usage:
 """
 
 import argparse
+import re
 import sys
+
+from neo4j.exceptions import ClientError
 
 from secgraph.cli import (
     add_database_argument,
@@ -25,6 +28,40 @@ from secgraph.neo4j import create_ownership_constraints
 from secgraph.neo4j.constraints import create_company_constraints
 
 
+def _validate_database_name(name: str) -> str | None:
+    """Return an error message if ``name`` is not a legal Neo4j database name, else None.
+
+    Neo4j accepts ascii letters, numbers, dots and dashes, must start with a letter, and is
+    2-63 characters. Underscores are *not* allowed — a natural choice like ``secgraph_repro``
+    fails, and it used to fail as a raw driver stack trace from inside phase 0.
+    """
+    if not (2 <= len(name) <= 63):
+        return f"database name {name!r} must be 2-63 characters (got {len(name)})"
+    if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9.\-]*", name):
+        return (
+            f"database name {name!r} is not valid for Neo4j. Use ascii letters, numbers, "
+            "dots and dashes, starting with a letter — underscores are not allowed "
+            f"(try {name.replace('_', '-')!r})."
+        )
+    return None
+
+
+def _is_unsupported_admin_command(exc: ClientError) -> bool:
+    """True when the server refused CREATE DATABASE because the edition lacks it.
+
+    Community raises ``Neo.ClientError.Statement.UnsupportedAdministrationCommand``; Aura has
+    used both that and a plain forbidden/unsupported message. Matched loosely (code *and*
+    message) so a wording change degrades into a raised error rather than a wrong diagnosis.
+    """
+    code = (exc.code or "").lower()
+    message = str(exc).lower()
+    return (
+        "unsupportedadministrationcommand" in code
+        or "unsupported administration command" in message
+        or ("createdatabase" in code and "unsupported" in code)
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create the SEC ownership database + constraints")
     add_execute_argument(parser)
@@ -33,6 +70,11 @@ def main():
 
     if not args.database:
         print("ERROR: --database NAME is required (the new ownership DB, e.g. secgraph)")
+        sys.exit(1)
+
+    name_error = _validate_database_name(args.database)
+    if name_error:
+        print(f"ERROR: {name_error}")
         sys.exit(1)
 
     logger = setup_logging("ownership_create_database", execute=args.execute)
@@ -54,11 +96,35 @@ def main():
             return
 
         logger.info(f"Creating database {args.database} (if not exists)...")
-        with driver.session(database="system") as session:
-            # WAIT blocks until the database is online; without it a freshly
-            # created database is not yet routable and the constraint sessions
-            # below fail with "Unable to retrieve routing information".
-            session.run(f"CREATE DATABASE {args.database} IF NOT EXISTS WAIT")
+        try:
+            with driver.session(database="system") as session:
+                # WAIT blocks until the database is online; without it a freshly
+                # created database is not yet routable and the constraint sessions
+                # below fail with "Unable to retrieve routing information".
+                #
+                # The name is backtick-quoted: Neo4j allows dashes and dots in database names,
+                # but a bare dashed identifier is a Cypher syntax error. `args.database` is
+                # validated by _validate_database_name above, so it cannot smuggle a backtick.
+                session.run(f"CREATE DATABASE `{args.database}` IF NOT EXISTS WAIT")
+        except ClientError as exc:
+            # Community Edition and Aura reject CREATE DATABASE outright: Community has no
+            # named databases, Aura exposes exactly one (`neo4j`). Raw driver errors here read
+            # as a connectivity problem, so name the actual cause and the two ways out.
+            if not _is_unsupported_admin_command(exc):
+                raise
+            logger.error("=" * 80)
+            logger.error(f"✗ This server cannot CREATE DATABASE '{args.database}'.")
+            logger.error("  Named databases require Neo4j Enterprise (local or Docker).")
+            logger.error("  Community Edition and Aura both expose a single database.")
+            logger.error("")
+            logger.error("  Either:")
+            logger.error("    - use Neo4j Enterprise / the neo4j:enterprise Docker image, or")
+            logger.error("    - target the server's existing database:")
+            logger.error("        NEO4J_DATABASE=neo4j make build-exec DB=neo4j")
+            logger.error("")
+            logger.error(f"  Underlying error: {exc.code}")
+            logger.error("=" * 80)
+            sys.exit(1)
         logger.info("✓ Database ready")
 
         logger.info("Creating constraints + indexes...")

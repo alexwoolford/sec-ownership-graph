@@ -27,7 +27,9 @@ dependencies = [
 
     # EDGAR HTTP client + bulk dataset staging
     "requests>=2.31.0,<3.0.0",
-    "tenacity>=8.0.0,<9.0.0",
+    # GDS >=1.14 needs tenacity>=9; the old <9 ceiling forced graphdatascience==1.12
+    # → pyarrow==16.1.0 (no cp313 wheels), which fails to build on Python 3.13.
+    "tenacity>=8.0.0,<10.0.0",
 
     # Data handling
     "pandas>=2.0.0,<3.0.0",
@@ -55,8 +57,12 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/alexwoolford/sec-ownership-graph"
 
-[tool.setuptools]
-packages = ["secgraph"]
+[tool.setuptools.packages.find]
+# Automatic discovery, NOT a hand-maintained list. `packages = ["secgraph"]` shipped only
+# secgraph/__init__.py — every subpackage (cli, neo4j, ingestion, mcp, schema, core, gds, utils)
+# was omitted from a non-editable install, and a manual list silently reintroduces that every
+# time a subpackage is added.
+include = ["secgraph*"]
 
 [tool.ruff]
 line-length = 100

@@ -34,6 +34,7 @@ from secgraph.cli import (
     verify_neo4j_connection,
 )
 from secgraph.ingestion.ownership.graph_native_proof import prove_graph_native_wins
+from secgraph.ingestion.ownership.pipeline import provenance_line
 
 
 def _parse_pairs(raw: list[str] | None) -> list[tuple[str, str]] | None:
@@ -57,7 +58,12 @@ def render_console(result: dict) -> None:
         f"{ch['hinges']} hinges → {ch['multi_hop_chains']} multi-hop chains "
         f"(deepest {ch['deepest_hops']} hops)"
     )
-    print(f"  SQL gets: {ch['sql_gets']}")
+    print(f"  flat SQL: {ch['sql_flat_gets']}")
+    print(
+        f"  recursive CTE: {ch['sql_recursive_chains']} paths >=2 hops, deepest "
+        f"{ch['sql_recursive_deepest']} ({ch['sql_elapsed_ms']} ms) — "
+        f"{'AGREES' if ch['sql_agrees'] else 'DIVERGES'} with the graph"
+    )
     for chain in ch["top_chains"]:
         steps = " -> ".join(
             f"{s['name']}({s['pct']:.0f}%)" if s["pct"] else s["name"] for s in chain
@@ -68,7 +74,9 @@ def render_console(result: dict) -> None:
     print("\n" + "=" * 72)
     print("WIN 2 — PATH: board interlock shortestPath vs SQL (GROUP BY)")
     print("=" * 72)
-    print(f"  SQL gets: {pa['sql_gets']}")
+    print(f"  flat SQL: {pa['sql_flat_gets']}")
+    for sp in pa.get("sql_paths", []):
+        print(f"    recursive BFS {sp['a']}->{sp['z']}: {sp['hops']} hops ({sp['elapsed_ms']} ms)")
     for c in pa["chains"]:
         if c["chain"]:
             print(f"    {c['a']} ~~> {c['z']}: " + " -- ".join(str(x) for x in c["chain"]))
@@ -86,7 +94,11 @@ def render_console(result: dict) -> None:
         f"{co['largest_raw']} · after custodial scrub {co['largest_scrubbed']} "
         f"activists, ~{co['largest_diameter']} hops diameter"
     )
-    print(f"  SQL gets: {co['sql_gets']}")
+    print(f"  flat SQL: {co['sql_flat_gets']}")
+    print(
+        f"  recursive CTE: largest component {co['sql_recursive_members']} "
+        f"({co['sql_elapsed_ms']} ms) — {'AGREES' if co['sql_agrees'] else 'DIVERGES'}"
+    )
     print("  largest coalition members: " + ", ".join(co["largest_members"]))
     print()
 
@@ -98,6 +110,8 @@ def render_markdown(result: dict, generated: str) -> str:
         "",
         f"*Generated {generated} read-only against `secgraph`. Each win runs the graph",
         "traversal and the flat-SQL equivalent side by side. Regenerate with `make prove`.*",
+        "",
+        provenance_line(),
         "",
         "**How each leg is computed.** The graph leg executes a Cypher variable-length",
         "traversal *inside Neo4j* (`VarLengthExpand`) over materialized derived edges —",
@@ -116,11 +130,16 @@ def render_markdown(result: dict, generated: str) -> str:
         f"- Graph engine: `{ch['graph_engine']}` "
         f"(cross-check vs the flat-SQL-equivalent Python walk: "
         f"{'agrees' if ch.get('matches_python_baseline') else 'DIVERGES'}).",
-        f"- **SQL gets:** {ch['sql_gets']} — it cannot walk the chain.",
-        "- *Scope, stated plainly: every issuer in these chains is micro/nano-cap (only Embraer"
-        " is a widely-recognised name). Read this as a **small-cap governance and credit screen**"
-        " — where control is concentrated and minority holders are exposed — not as a large-cap"
-        " tool. Large caps have no >=50% holder, and the query correctly abstains on them.*",
+        f"- **Flat SQL:** {ch['sql_flat_gets']}.",
+        f"- **Recursive CTE (`WITH RECURSIVE`):** {ch['sql_recursive_chains']} paths at >=2 hops, "
+        f"deepest {ch['sql_recursive_deepest']}, in {ch['sql_elapsed_ms']} ms — "
+        f"**{'agrees with the graph' if ch['sql_agrees'] else 'DIVERGES'}**. A warehouse can "
+        "reach this answer; the graph's advantage is one declarative pattern per question "
+        "rather than a hand-built recursion each time.",
+        "- *Scope, stated plainly: these chains are dominated by micro/nano-cap issuers. Read this"
+        " as a **small-cap governance and credit screen** — where control is concentrated and"
+        " minority holders are exposed — not as a large-cap tool. Large caps have no >=50% holder,"
+        " and the query correctly abstains on them.*",
         "",
     ]
     for chain in ch["top_chains"]:
@@ -132,13 +151,19 @@ def render_markdown(result: dict, generated: str) -> str:
         "",
         "## Win 2 — PATH: board-interlock shortestPath",
         "",
-        f"- **SQL gets:** {pa['sql_gets']}.",
-        "- *Read the bridging director, not the path. Measured on this graph, **every**"
-        " well-connected pair of companies is linked within 4 hops (a sample of 60 pairs: 5 at 1"
-        ' hop, 18 at 2, 27 at 3, 10 at 4). So "are these two boards connected?" is effectively'
-        " always yes and carries no information. What is informative is **who** the named"
-        " connector is, and which boards are structurally central (PG 101 interlocks, HPQ 90,"
-        " AIG 90, GE 88) — a governance-concentration screen.*",
+        f"- **Flat SQL:** {pa['sql_flat_gets']}.",
+        "- **Recursive BFS:** "
+        + "; ".join(
+            f"`{sp['a']}`→`{sp['z']}` {sp['hops']} hops ({sp['elapsed_ms']} ms)"
+            for sp in pa.get("sql_paths", [])
+        )
+        + ". Same paths as the graph, at higher cost — frontier expansion rather than "
+        "bidirectional search, and it needs an explicit hop cap to stay bounded.",
+        "- *Read the bridging director, not the path. Well-connected pairs are linked within a"
+        ' handful of hops, so "are these two boards connected?" is effectively always yes and'
+        " carries no information. What is informative is **who** the named connector is, and"
+        " which boards are structurally central — a governance-concentration screen. The measured"
+        " hop distribution for this build is in `results/ownership_graph_density.json`.*",
         "",
     ]
     for c in pa["chains"]:
@@ -156,16 +181,20 @@ def render_markdown(result: dict, generated: str) -> str:
         f"- {co['cotarget_pairs']} co-targeting pairs → largest coalition **{co['largest_scrubbed']} "
         f"activists, ~{co['largest_diameter']} hops** (raw {co['largest_raw']} before the "
         "custodial-hub precision scrub).",
-        "- *Previously reported as 22. The scrub was matching the substring `RBC`, which does not"
-        " match `ROYAL BANK OF CANADA`, so RBC, Toronto Dominion, Lazard, City of London and Ohio"
-        " PERS were being counted as activists. Correcting the name list removed six"
-        " non-activists. **This is a precision fix, not a change in the underlying data** — and"
-        " the tighter roster is the stronger claim, because every remaining name is a genuine"
-        " activist or control person.*",
+        f"- *The raw component is {co['largest_raw']}; the scrub removes"
+        f" {co['largest_raw'] - co['largest_scrubbed']} custodial/index hub(s) that bridge"
+        " unrelated activists. Substring matching is why this needs care: the scrub once matched"
+        " `RBC` but not `ROYAL BANK OF CANADA`, so RBC and Toronto Dominion were counted as"
+        " activists and inflated the figure. **Scrubbing is a precision choice, not a change to"
+        " the underlying data** — hubs are labelled `is_custodial` and excluded at projection"
+        " time, so the co-filing facts survive and the choice stays auditable.*",
         f"- Graph engine: `{co['graph_engine']}` "
         f"(cross-check vs the flat-SQL-equivalent Python walk: "
         f"{'agrees' if co.get('matches_python_baseline') else 'DIVERGES'}).",
-        f"- **SQL gets:** {co['sql_gets']}.",
+        f"- **Flat SQL:** {co['sql_flat_gets']}.",
+        f"- **Recursive CTE:** largest component {co['sql_recursive_members']} members in "
+        f"{co['sql_elapsed_ms']} ms — "
+        f"**{'agrees with the graph' if co['sql_agrees'] else 'DIVERGES'}**.",
         f"- Largest coalition members: {', '.join(co['largest_members'])}.",
         "",
         "## The rule",

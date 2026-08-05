@@ -162,6 +162,11 @@ def verify_connection(driver: "Driver", database: str | None = None) -> bool:
     """
     Verify Neo4j connection is working.
 
+    The probe query depends on the target: ``system`` rejects ordinary Cypher with "This Cypher
+    command can only be executed in a user database", so it is probed with ``SHOW DATABASES``
+    instead of ``RETURN 1``. Phase 0 needs the ``system`` path because it runs before the target
+    database exists.
+
     Args:
         driver: Neo4j driver instance
         database: Optional database name (uses configured default if not provided)
@@ -171,9 +176,10 @@ def verify_connection(driver: "Driver", database: str | None = None) -> bool:
     """
     if database is None:
         database = get_neo4j_database()
+    probe = "SHOW DATABASES YIELD name RETURN count(*) AS n" if database == "system" else "RETURN 1"
     try:
         with driver.session(database=database) as session:
-            session.run("RETURN 1")
+            session.run(probe).consume()
         return True
     except Exception as e:
         logger.error(f"Neo4j connection verification failed: {e}")
