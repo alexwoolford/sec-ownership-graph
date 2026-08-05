@@ -87,3 +87,93 @@ class TestParseControlFigures:
         assert row["company_cik"] == "0000320193"
         assert row["control_class"] == "control"
         assert row["pct_verified"] is True
+
+
+class _Result:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def data(self):
+        return self._rows
+
+
+class _Session:
+    """Minimal session returning a fixed edge list for the 'needs extraction' query."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def run(self, *_a, **_k):
+        return _Result(self._rows)
+
+
+class _Driver:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def session(self, database=None):
+        return _Session(self._rows)
+
+
+class TestGapFillClientResolution:
+    """The build runs the gap fill unconditionally, so a no-op run must need no API key.
+
+    This is what collapses the 'CSV present but stale' state: extraction always runs, but it is
+    free and keyless when the committed figures already cover every edge.
+    """
+
+    def test_no_uncovered_edges_never_builds_a_client(self):
+        from secgraph.ingestion.ownership.control_extraction import extract_control_edges
+
+        calls = []
+
+        def factory():
+            calls.append(1)
+            raise AssertionError("client must not be constructed when there is no work")
+
+        result = extract_control_edges(
+            _Driver([]),
+            llm_client=None,
+            model="gpt-4o-mini",
+            database="secgraph",
+            execute=True,
+            client_factory=factory,
+        )
+        assert result["total"] == 0
+        assert result["skipped_no_work"] is True
+        assert calls == [], "an OPENAI_API_KEY must not be required for a fully-covered build"
+
+    def test_uncovered_edges_with_no_client_raises(self):
+        """Fail closed. An unclassified edge has no percent_of_class, so it is absent from
+        CONTROLS and INFLUENCES entirely — a 'successful' build here would serve silently
+        incomplete answers, violating the no-silent-fallbacks rule."""
+        from secgraph.ingestion.ownership.control_extraction import extract_control_edges
+
+        rows = [{"accession_number": "0001234-27-000001", "subject_cik": "0000320193"}]
+        with pytest.raises(ValueError, match="no control figures and no LLM client"):
+            extract_control_edges(
+                _Driver(rows),
+                llm_client=None,
+                model="gpt-4o-mini",
+                database="secgraph",
+                execute=True,
+                client_factory=None,
+            )
+
+    def test_missing_client_is_not_absorbed_as_unknown(self):
+        """extract_with_llm must raise on a None client rather than return None.
+
+        The per-edge error handler turns a failed extraction into an 'unknown' label. If a
+        missing client fell into that path, an entire keyless run would label every edge
+        unknown and exit 0 — a green build over an empty control layer.
+        """
+        from secgraph.ingestion.ownership.control_extraction import extract_with_llm
+
+        with pytest.raises(ValueError, match="without an LLM client"):
+            extract_with_llm("cover page text", None, "gpt-4o-mini")

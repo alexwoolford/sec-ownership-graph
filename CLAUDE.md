@@ -82,10 +82,33 @@ Rules that follow, and the traps behind each:
    staged periods, and whether control figures came from the committed CSV or a live LLM run. A
    cloner who can't see the inputs can't tell drift from breakage.
 
-Control figures are the LLM-free path: `reference/control_figures.csv` (produced by
-`export_control_figures.py`, applied by `load_control_figures.py`) makes `CONTROLS` deterministic.
-The pipeline prefers it and falls back to LLM extraction; `--extract-control` runs both so the CSV
-seeds and the model fills only newer filings.
+Control figures are the *mostly* LLM-free path: `reference/control_figures.csv` (produced by
+`export_control_figures.py`, applied by `load_control_figures.py`) makes `CONTROLS` deterministic
+**for the window it was exported from**. Three steps now run in sequence, always:
+
+1. `load_control_figures.py` — apply the committed CSV (deterministic, no key).
+2. `extract_control_edges.py` — **unconditional gap fill** for whatever the CSV didn't cover.
+3. `export_control_figures.py` — re-export, so the *next* rebuild is deterministic too.
+
+**The gap fill is not optional, and that is deliberate.** The old plan ran extraction only when
+the CSV was *absent*, which left a third state the binary `exists()` check missed: **present but
+stale**. Since `beneficial.py` never writes `percent_of_class` (only the CSV or the extractor
+does), and `NULL >= 10.0` → `null` in Cypher, an uncovered edge is *silently filtered out* of
+`CONTROLS`/`INFLUENCES` — no error, no warning, just a confident incomplete answer. That breaks
+both "no silent fallbacks" and "evidence or abstain".
+
+It's cheap and self-limiting: `only_missing=True` is the default, so full coverage means an empty
+edge list, no client construction, and **no key required** (`skipped_no_work: True`). Cost scales
+with the gap — regex resolves ~93% of edges (`pct_source` is `row13`/`prose`/`aggregate_*`) and
+only ~6.7% reach `gpt-4o-mini`: **~$0.21 for all 10.6k edges**, cents for a year of drift. The
+binding constraint is EDGAR's 10 req/s body fetch, not tokens.
+
+`--extract-control` now means `--all` (re-extract *everything*), for when the prompt or threshold
+changes. `--skip-uncovered` on `extract_control_edges.py` downgrades the fail-closed error to a
+warning; without it, uncovered edges + no key aborts the build.
+
+Provenance records `reference_csv_plus_gap_fill`, not `reference_csv` — a build's control layer
+may be CSV rows *plus* model-classified newer edges, and a reader comparing two builds needs that.
 
 ## Core conventions (enforced)
 
