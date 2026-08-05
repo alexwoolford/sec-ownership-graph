@@ -96,6 +96,29 @@ def _relative_csv_path() -> str:
         return str(_CONTROL_FIGURES_CSV)
 
 
+def _llm_path_unavailable_reason() -> str | None:
+    """Why control extraction could not run, or None if it can.
+
+    Split out so preflight can treat the same condition two ways: fatal with no committed CSV
+    (nothing would classify *any* edge), advisory with one (the gap may be zero).
+    """
+    if importlib.util.find_spec("openai") is None:
+        return (
+            "the 'openai' package is not installed, so control extraction cannot run.\n"
+            '        Install it with:  pip install -e ".[dev,llm]"\n'
+            "        (the documented '[dev]' extra deliberately omits openai)"
+        )
+
+    from secgraph.core.config.settings import get_settings
+
+    if not get_settings().openai_api_key:
+        return (
+            "OPENAI_API_KEY is not set, so control extraction cannot run.\n"
+            "        Set OPENAI_API_KEY in .env."
+        )
+    return None
+
+
 def _steps(
     database: str,
     *,
@@ -110,8 +133,10 @@ def _steps(
     ``quarters_345`` is caller-overridable because it is the one knob that decides whether the
     density gate passes, and a NO-GO aborts the build at step 5 of 14.
 
-    ``extract_control`` forces the LLM extraction step even when committed control figures
-    exist — use it to fill in filings newer than the CSV.
+    ``extract_control`` re-extracts **every** 13D edge (``--all``) rather than only the ones the
+    committed CSV missed. The gap fill itself is always in the plan, so this flag is only for
+    deliberately rebuilding the whole control layer from filings — e.g. after changing the
+    extraction prompt or the control threshold.
 
     ``as_of`` pins every acquisition step to a date, so the staged windows and the crawled
     filings match a reference build instead of drifting forward with EDGAR.
@@ -167,12 +192,23 @@ def _steps(
             "Phase 2a — load BeneficialOwner nodes + 13D/13G BENEFICIAL_OWNER_OF edges",
             extra_args=[*db] + as_of_args + (["--refresh"] if refresh else []),
         ),
-        # Control figures on 13D edges (needs Phase 2a). Two ways in:
+        # Control figures on 13D edges (needs Phase 2a). Two cooperating steps, always in this
+        # order — CSV first, then a gap fill:
         #
-        #   1. reference/control_figures.csv, when committed — deterministic, no API key, and
-        #      identical on every rebuild. This is the default and the reproducible path.
-        #   2. extract_control_edges.py — one LLM call per 13D edge. Used when there is no CSV,
-        #      or via --extract-control to fill in filings newer than the CSV.
+        #   1. load_control_figures.py — applies reference/control_figures.csv when committed.
+        #      Deterministic, no API key, identical on every rebuild.
+        #   2. extract_control_edges.py — classifies whatever the CSV did not cover. Runs
+        #      **unconditionally**, because the CSV covers only the EDGAR window it was exported
+        #      from. A cloner building a year later crawls newer 13Ds that no committed row
+        #      matches, and an unclassified edge has no percent_of_class at all — so it silently
+        #      vanishes from CONTROLS and INFLUENCES rather than erroring. This step is what
+        #      collapses "CSV present but stale" (a knowingly wrong middle state) into either a
+        #      complete layer or a hard failure.
+        #
+        # It is cheap and self-limiting: only_missing=True is the default, so with full coverage
+        # the edge list is empty, no LLM client is constructed, and no key is needed. Cost scales
+        # with the gap — regex resolves ~93% of edges for free and only the remainder reaches
+        # gpt-4o-mini (a full 10.6k-edge re-extract is ~$0.21; a year of drift is cents).
         #
         # Both write the same properties (control_class / percent_of_class / pct_verified), so
         # materialize_control_edges downstream cannot tell them apart.
@@ -189,16 +225,21 @@ def _steps(
             if _CONTROL_FIGURES_CSV.exists()
             else []
         ),
-        *(
-            [
-                Step(
-                    "extract_control_edges.py",
-                    "Derived — extract control-vs-stake figures for Schedule 13D edges (LLM)",
-                    extra_args=db,
-                )
-            ]
-            if extract_control or not _CONTROL_FIGURES_CSV.exists()
-            else []
+        Step(
+            "extract_control_edges.py",
+            "Derived — classify any 13D edges the committed figures did not cover (LLM gap fill)"
+            if _CONTROL_FIGURES_CSV.exists()
+            else "Derived — extract control-vs-stake figures for Schedule 13D edges (LLM)",
+            extra_args=[*db] + (["--all"] if extract_control else []),
+        ),
+        # Re-export the merged figures so the *cloner's* next rebuild is deterministic too.
+        # Without this the loop never closes: the gap fill labels the new edges in Neo4j, but
+        # reference/control_figures.csv still ends at the original export window, so every
+        # subsequent rebuild re-extracts the same edges and pays for them again.
+        Step(
+            "export_control_figures.py",
+            "Derived — re-export control figures to reference/ (keeps future rebuilds LLM-free)",
+            extra_args=["--database", database, "--out", _relative_csv_path()],
         ),
         # Promote verified control to a traversable edge (+ CIK-identity bridge). Must follow
         # extract_control_edges: it reads control_class='control'. This is what makes the
@@ -380,29 +421,31 @@ def preflight_checks(
     except OSError as exc:  # pragma: no cover - platform-dependent
         log.warning(f"  ? could not check free disk space: {exc}")
 
-    # --- Control figures: either the committed CSV, or a working LLM path. Checked here
-    # because extract_control_edges is step 8 of 14 — hours in — and dies on a bare import.
+    # --- Control figures. Checked here because the control steps land ~8 of 16 — hours in —
+    # and an unusable LLM path dies on a bare import.
+    #
+    # The committed CSV does NOT remove the need for a working extraction path: it covers only
+    # the EDGAR window it was exported from, and the build always runs a gap fill behind it. A
+    # cloner building later crawls newer 13Ds the CSV cannot match, and an unclassified edge is
+    # absent from CONTROLS/INFLUENCES rather than erroring. So the LLM path is checked either
+    # way — as a hard failure with no CSV, and as a warning with one (the gap may well be zero,
+    # which is the only case that legitimately needs no key).
     if _CONTROL_FIGURES_CSV.exists():
         log.info(f"  ✓ control figures: {_CONTROL_FIGURES_CSV}")
-    else:
-        if importlib.util.find_spec("openai") is None:
-            failures.append(
-                f"no committed control figures at {_CONTROL_FIGURES_CSV} and the 'openai' "
-                "package is not installed, so control extraction cannot run.\n"
-                '        Install it with:  pip install -e ".[dev,llm]"\n'
-                "        (the documented '[dev]' extra deliberately omits openai)"
-            )
-        else:
-            from secgraph.core.config.settings import get_settings
 
-            if not get_settings().openai_api_key:
-                failures.append(
-                    f"no committed control figures at {_CONTROL_FIGURES_CSV} and "
-                    "OPENAI_API_KEY is not set, so control extraction cannot run.\n"
-                    "        Set OPENAI_API_KEY in .env, or supply the CSV."
-                )
-            else:
-                log.info("  ✓ control extraction: openai + OPENAI_API_KEY available")
+    llm_gap = _llm_path_unavailable_reason()
+    if llm_gap is None:
+        log.info("  ✓ control extraction: openai + OPENAI_API_KEY available (gap fill ready)")
+    elif _CONTROL_FIGURES_CSV.exists():
+        log.warning(
+            f"  ⚠ control gap fill unavailable: {llm_gap}\n"
+            "        The committed CSV covers only its own export window. If your EDGAR crawl\n"
+            "        picks up newer 13D filings, they cannot be classified and will be MISSING\n"
+            "        from control and influence answers. The build will stop at that step\n"
+            "        unless you pass --skip-uncovered to accept an incomplete layer."
+        )
+    else:
+        failures.append(f"no committed control figures at {_CONTROL_FIGURES_CSV} and {llm_gap}")
 
     # --- Neo4j. Only checkable with a driver; the dry run says so rather than guessing.
     if driver is None:
@@ -606,10 +649,15 @@ def collect_provenance(
         "quarters_345_requested": quarters_345,
         "quarters_13f_requested": quarters_13f,
         "staged_periods": staged,
+        # "reference_csv_plus_gap_fill", not "reference_csv": the CSV covers only the window it
+        # was exported from, and the build always runs the LLM gap fill behind it. Claiming a
+        # pure-CSV provenance would understate what produced the layer — the extractor may have
+        # classified newer edges, and a reader comparing two builds needs to know that.
         "control_figures": (
             {
-                "source": "reference_csv",
+                "source": "reference_csv_plus_gap_fill",
                 "path": str(_CONTROL_FIGURES_CSV.relative_to(_REPO_ROOT)),
+                "gap_fill_model": ModelConfig.LLM_MINI_MODEL,
             }
             if _CONTROL_FIGURES_CSV.exists()
             else {"source": "llm_extraction", "model": ModelConfig.LLM_MINI_MODEL}

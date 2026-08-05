@@ -381,7 +381,17 @@ def extract_with_llm(text_window: str, llm_client: Any, model: str) -> dict[str,
     Robust to the model wrapping JSON in prose or code fences. Any client/parse
     failure returns None (the caller records the edge as ``unknown``), so one bad
     filing never aborts the run.
+
+    A **missing** client is different from a failing one, and must not be absorbed by that
+    catch-all: with ``llm_client=None`` every attribute access raises, so an entire run would
+    label itself ``unknown`` and exit 0 — a green build over an unclassified control layer.
+    That is the same failure shape as the placeholder-User-Agent bug. Fail fast instead.
     """
+    if llm_client is None:
+        raise ValueError(
+            "extract_with_llm called without an LLM client. The caller must resolve a client "
+            "before extraction, or skip extraction entirely when there is nothing to extract."
+        )
     try:
         resp = llm_client.chat.completions.create(
             model=model,
@@ -517,12 +527,14 @@ def extract_control_edges(
     execute: bool = False,
     limit: int | None = None,
     logger_instance: logging.Logger | None = None,
+    client_factory: Any = None,
 ) -> dict[str, Any]:
     """Extract & label control vs. stake for every 13D edge (full coverage).
 
     Args:
         driver: Neo4j driver.
-        llm_client: OpenAI-style client (``.chat.completions.create``).
+        llm_client: OpenAI-style client (``.chat.completions.create``). May be None when
+            ``client_factory`` is supplied — see below.
         model: Mini model id for attribute extraction (e.g. ``gpt-4o-mini``).
         database: Target database (``secgraph``).
         only_missing: Skip edges already labelled (resumable); False re-does all.
@@ -532,6 +544,10 @@ def extract_control_edges(
         execute: If False, only report the plan (dry-run default).
         limit: Optional cap on edges (for a bounded trial run).
         logger_instance: Optional logger.
+        client_factory: Zero-arg callable returning an LLM client, resolved **only if there
+            is work to do**. This is what lets the build run this step unconditionally: with
+            full CSV coverage the edge list is empty, the factory is never called, and no API
+            key is required. Ignored when ``llm_client`` is already supplied.
 
     Returns:
         Coverage summary dict (total / verified / coverage_pct / control / stake /
@@ -553,6 +569,25 @@ def extract_control_edges(
         log.info(f"  verify against source, and label control/stake for {total:,} edges.")
         log.info("Run with --execute to extract and write.")
         return {"dry_run": True, "total": total}
+
+    # Nothing to do — the committed CSV already covers every 13D edge. Return before touching
+    # the LLM client so a fully-covered build needs no API key at all. This is the branch that
+    # makes the step safe to run unconditionally.
+    if total == 0:
+        log.info("✓ Every 13D edge already carries control figures — nothing to extract.")
+        return {"total": 0, "written": 0, "skipped_no_work": True}
+
+    # Only now is a client genuinely required, so resolve it late and let the error surface
+    # here (with the edge count in hand) rather than at import time.
+    if llm_client is None and client_factory is not None:
+        log.info(f"resolving LLM client for {total:,} uncovered edge(s)")
+        llm_client = client_factory()
+    if llm_client is None:
+        raise ValueError(
+            f"{total:,} 13D edge(s) have no control figures and no LLM client is available. "
+            "Supply an OPENAI_API_KEY to classify them, or pass --skip-uncovered to accept an "
+            "incomplete control layer."
+        )
 
     results: list[dict[str, Any]] = []
     done = 0

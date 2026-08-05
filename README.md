@@ -97,7 +97,7 @@ make serve                  # curated MCP tools over stdio (or use Cursor — se
 | --- | --- |
 | **Neo4j** | **Enterprise** (or Docker `neo4j:enterprise`) **+ the GDS plugin**. Phase 0 runs `CREATE DATABASE`; the density gate runs `gds.wcc.write`. Community/Aura expose one database — use `make build-exec DB=neo4j`. |
 | **`SEC_USER_AGENT`** | **Required.** SEC fair access rejects generic agents with HTTP 403. The built-in default is a placeholder on the reserved domain `example.com`; `make preflight` refuses to start until you set a real contact string. |
-| **OpenAI key** | Only if `reference/control_figures.csv` is absent. Control extraction is the one LLM step; with the committed figures, a build needs no key at all. |
+| **OpenAI key** | **Effectively required for a fresh build.** `reference/control_figures.csv` covers only the EDGAR window it was exported from, so any 13D filed since needs classifying — and the build runs that gap fill unconditionally rather than leaving those edges unclassified (an unclassified edge silently vanishes from control and influence answers). It is cheap and scales with the gap: a regex resolves ~93% of edges for free, so only the remainder reaches `gpt-4o-mini` — **~$0.21 to classify all 10.6k edges**, cents for a year of drift, and **$0 when the CSV is already current**. Pass `--skip-uncovered` to build without a key and accept a knowingly incomplete layer. |
 | **Time & disk** | Several hours, ~20 GB. Dominated by the ~8,000-issuer 13D/G crawl and the 13F load, both bounded by SEC's 10 req/s ceiling. |
 
 `make preflight` checks every one of these. Each used to surface only after minutes-to-hours of

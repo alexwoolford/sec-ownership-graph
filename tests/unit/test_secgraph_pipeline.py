@@ -72,22 +72,67 @@ class TestSteps:
         )
 
     def test_control_step_selection(self, monkeypatch, tmp_path):
-        """CSV present → deterministic loader only; --extract-control → CSV then LLM fill."""
+        """The LLM gap fill is UNCONDITIONAL; the CSV loader only runs when a CSV exists.
+
+        The gap fill used to be opt-in behind --extract-control, which left a third state the
+        binary exists() check did not cover: CSV present but stale. The CSV covers only its
+        export window, so a later rebuild crawls newer 13Ds it cannot match — and an
+        unclassified edge has no percent_of_class, so it is silently absent from CONTROLS and
+        INFLUENCES instead of erroring. Running the fill every time is what removes that state.
+        """
         csv_path = tmp_path / "control_figures.csv"
         csv_path.write_text("accession_number\n")
         monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
 
         default = [s.script for s in p._steps("secgraph", refresh=False)]
         assert "load_control_figures.py" in default
-        assert "extract_control_edges.py" not in default
-
-        both = [s.script for s in p._steps("secgraph", refresh=False, extract_control=True)]
-        assert both.index("load_control_figures.py") < both.index("extract_control_edges.py")
+        # The regression this guards: the gap fill must be present with no flag at all.
+        assert "extract_control_edges.py" in default
+        assert default.index("load_control_figures.py") < default.index(
+            "extract_control_edges.py"
+        ), "committed figures must be applied before the fill, or the fill re-does covered edges"
 
         monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", tmp_path / "absent.csv")
         no_csv = [s.script for s in p._steps("secgraph", refresh=False)]
         assert "extract_control_edges.py" in no_csv
         assert "load_control_figures.py" not in no_csv
+
+    def test_gap_fill_is_incremental_unless_extract_control(self, monkeypatch, tmp_path):
+        """Default fill is only-missing; --extract-control passes --all to redo everything.
+
+        Cost depends on this: only-missing touches just the uncovered edges (cents), while --all
+        re-extracts all ~10.6k. If the default ever gained --all, every build would pay full price.
+        """
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        def fill_args(**kwargs):
+            steps = p._steps("secgraph", refresh=False, **kwargs)
+            return next(s for s in steps if s.script == "extract_control_edges.py").extra_args
+
+        assert "--all" not in fill_args()
+        assert "--all" in fill_args(extract_control=True)
+
+    def test_reexport_follows_the_gap_fill(self, monkeypatch, tmp_path):
+        """Figures are re-exported after the fill, so the NEXT rebuild is LLM-free.
+
+        Without this the loop never closes: the fill labels new edges in Neo4j but the committed
+        CSV still ends at the old window, so every later rebuild re-extracts the same edges.
+        """
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        scripts = [s.script for s in p._steps("secgraph", refresh=False)]
+        assert "export_control_figures.py" in scripts
+        assert scripts.index("extract_control_edges.py") < scripts.index(
+            "export_control_figures.py"
+        )
+        # And the export must not land after the materializer that consumes the figures.
+        assert scripts.index("export_control_figures.py") < scripts.index(
+            "materialize_control_edges.py"
+        )
 
 
 class _FakeSession:

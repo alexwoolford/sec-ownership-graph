@@ -90,12 +90,19 @@ class TestProvenance:
         assert prov["as_of_pinned"] is False
 
     def test_control_source_reflects_committed_csv(self, monkeypatch, tmp_path):
+        """Provenance must not claim a pure-CSV source — the build always runs a gap fill.
+
+        The CSV covers only its export window, so the layer a build actually serves can be
+        CSV rows plus LLM-classified newer edges. Recording "reference_csv" would tell someone
+        comparing two builds that no model was involved, which may be false.
+        """
         csv_path = tmp_path / "control_figures.csv"
         csv_path.write_text("accession_number\n")
         monkeypatch.setattr(pipeline, "_CONTROL_FIGURES_CSV", csv_path)
         monkeypatch.setattr(pipeline, "_REPO_ROOT", tmp_path)
         prov = pipeline.collect_provenance(as_of=None, quarters_345=12, quarters_13f=4)
-        assert prov["control_figures"]["source"] == "reference_csv"
+        assert prov["control_figures"]["source"] == "reference_csv_plus_gap_fill"
+        assert prov["control_figures"]["gap_fill_model"]
 
     def test_control_source_names_the_model_when_extracting(self, monkeypatch, tmp_path):
         monkeypatch.setattr(pipeline, "_CONTROL_FIGURES_CSV", tmp_path / "absent.csv")
