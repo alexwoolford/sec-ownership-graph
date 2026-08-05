@@ -179,3 +179,69 @@ class TestCollectFreshness:
     def test_as_of_none_when_no_beneficial_owner_layer(self):
         m = p.collect_freshness(_FakeDriver([{"k": "Company", "c": 1, "max_date": None}]), "x")
         assert m["as_of"] is None
+
+
+class TestFsdsWiring:
+    """The balance-sheet layer must stage before it loads, and load before size is derived."""
+
+    def test_staging_precedes_load_precedes_size(self, monkeypatch, tmp_path):
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        steps = p._steps("secgraph", refresh=False)
+        scripts = [s.script for s in steps]
+        assert "load_company_financials.py" in scripts
+
+        fsds_stage = next(
+            i
+            for i, s in enumerate(steps)
+            if s.script == "download_ownership_data.py" and "fsds" in s.extra_args
+        )
+        load = scripts.index("load_company_financials.py")
+        size = scripts.index("materialize_materiality.py")
+        assert fsds_stage < load, "cannot load what has not been staged"
+        # This one is a real data dependency, not a preference: materialize_materiality computes
+        # size_usd = coalesce(total_assets_usd, institutional_value_usd), so running it first
+        # would silently produce a float-only measure and hide the assets-only issuers.
+        assert load < size, "total_assets_usd must exist before size_usd is derived from it"
+
+    def test_as_of_is_passed_at_load_time_not_only_download(self, monkeypatch, tmp_path):
+        """staged_zip_paths globs the WHOLE local cache, so a machine that once staged more
+        quarters would load a wider window than a fresh clone from the same command. Pinning only
+        the download leaves that hazard open."""
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        steps = p._steps("secgraph", refresh=False, as_of="2026-06-30")
+        load = next(s for s in steps if s.script == "load_company_financials.py")
+        assert "--as-of" in load.extra_args
+        assert "2026-06-30" in load.extra_args
+        assert "--quarters" in load.extra_args
+
+    def test_refresh_replaces_stale_figures(self, monkeypatch, tmp_path):
+        """An issuer that stops filing must lose its figure; absence is meaningful here."""
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        refresh = next(
+            s
+            for s in p._steps("secgraph", refresh=True)
+            if s.script == "load_company_financials.py"
+        )
+        assert "--replace" in refresh.extra_args
+        build = next(
+            s
+            for s in p._steps("secgraph", refresh=False)
+            if s.script == "load_company_financials.py"
+        )
+        assert "--replace" not in build.extra_args
+
+    def test_provenance_records_staged_fsds_periods(self, monkeypatch, tmp_path):
+        """Without the resolved quarters a cloner comparing assets figures cannot tell drift
+        from breakage."""
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", tmp_path / "absent.csv")
+        prov = p.collect_provenance(as_of=None, quarters_345=16, quarters_13f=4)
+        assert "fsds" in prov["staged_periods"]

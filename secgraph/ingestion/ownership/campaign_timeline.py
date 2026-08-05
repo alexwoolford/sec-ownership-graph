@@ -144,20 +144,27 @@ def classify_filer(name: str | None, filing_type: str | None) -> str:
     return "other_holder"
 
 
-def format_institutional_value(value: float | None) -> str:
-    """Render the 13F size proxy for display, or note its absence.
+def format_institutional_value(value: float | None, source: str | None = None) -> str:
+    """Render the size figure for display, or note its absence.
 
     Shown wherever results are size-ranked: an ordering the reader cannot see the basis for looks
-    arbitrary. "no 13F coverage" is stated explicitly rather than blank, because absence is a
-    fact about the issuer (not institutionally held), not a gap in the rendering.
+    arbitrary. Absence is stated explicitly rather than left blank, because it is a fact about the
+    issuer (nothing reported), not a gap in the rendering.
+
+    ``source`` names the measure, since the two are different quantities: "assets" is a filed
+    balance-sheet total, "institutional" is 13F free float. Rendering both with the same noun
+    would conflate them — a $43B balance sheet and $43B of float are not the same claim.
     """
+    label = {"dera_assets": "assets", "institutional_13f": "institutional"}.get(
+        source or "", "size"
+    )
     if value is None:
-        return ", no 13F coverage"
+        return ", no size figure"
     if value >= 1e9:
-        return f", ${value / 1e9:,.1f}B institutional"
+        return f", ${value / 1e9:,.1f}B {label}"
     if value >= 1e6:
-        return f", ${value / 1e6:,.0f}M institutional"
-    return f", ${value:,.0f} institutional"
+        return f", ${value / 1e6:,.0f}M {label}"
+    return f", ${value:,.0f} {label}"
 
 
 def order_filings(filings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -386,7 +393,7 @@ class CampaignTimelineEngine:
              }) AS filings
         WHERE size(filings) >= $min_activists
         RETURN c.cik AS cik, c.name AS name, c.ticker AS ticker,
-               c.institutional_value_usd AS value_usd, filings
+               c.size_usd AS value_usd, c.size_source AS value_source, filings
         """
         with self.driver.session(database=self.database) as session:
             rows = cast(
@@ -418,7 +425,12 @@ class CampaignTimelineEngine:
                         "cik": row["cik"],
                         "name": row["name"],
                         "ticker": row["ticker"],
+                        # Key kept for backwards compatibility with existing readers, but it now
+                        # carries size_usd (assets where filed, else 13F float) — read
+                        # size_source alongside it to know which measure produced the number.
                         "institutional_value_usd": row.get("value_usd"),
+                        "size_usd": row.get("value_usd"),
+                        "size_source": row.get("value_source"),
                     },
                     "franchises": franchises,
                     "franchise_count": len(franchises),
@@ -525,7 +537,7 @@ class CampaignTimelineEngine:
                 lines.append(
                     f"\n  {c['ticker'] or c['cik']} — {c['name']} "
                     f"({h['franchise_count']} franchises within {h['span_days']} days"
-                    f"{format_institutional_value(c.get('institutional_value_usd'))})"
+                    f"{format_institutional_value(c.get('size_usd'), c.get('size_source'))})"
                 )
                 for f in h["filings"]:
                     pct = f" {f['percent_of_class']}%" if f.get("percent_of_class") else ""

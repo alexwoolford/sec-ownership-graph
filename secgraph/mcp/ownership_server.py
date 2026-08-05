@@ -50,7 +50,10 @@ _SECGRAPH_SCHEMA: dict[str, Any] = {
         "Answers variable-depth reachability questions that flat SQL cannot express."
     ),
     "nodes": {
-        "Company": "A public issuer. Keys: cik. Props: name, ticker.",
+        "Company": (
+            "A public issuer. Keys: cik. Props: name, ticker, size_usd, size_source, "
+            "total_assets_usd (filed balance-sheet total), institutional_value_usd (13F float)."
+        ),
         "Insider": "A natural-person director/officer (Form 3/4/5 filer). Keys: cik. Props: name.",
         "BeneficialOwner": "A 13D/13G beneficial owner (activist or passive). Keys: cik. Props: name.",
         "InstitutionalManager": "A 13F filer. Keys: cik. Props: name.",
@@ -79,20 +82,24 @@ _SECGRAPH_SCHEMA: dict[str, Any] = {
         "activist_coalition — PRIMARY: the custodial-scrubbed co-targeting coalition around a "
         "named activist, with its diameter",
         "ownership_snapshot — SUPPORTING: top holders / insiders / control status for an issuer",
-        "control_chain — PRIMARY: transitive >=50% control chains. Works on large caps: 27 of "
-        "825 controlled issuers carry >=$10B of institutional ownership (Deutsche Telekom holds "
-        "74.3% of T-Mobile US; GE held 62.6% of Baker Hughes). Only the MULTI-HOP pyramids are "
-        "small-cap. Results carry institutional_value_usd so they can be ranked by size",
+        "control_chain — PRIMARY: transitive >=50% control chains. Works on large caps: 39 of "
+        "825 controlled issuers are >=$10B by size_usd and 150 are >=$1B (Deutsche Telekom holds "
+        "74.3% of T-Mobile US, $219B in assets; Ergen holds 51.8% of EchoStar, $43B). Only the "
+        "MULTI-HOP pyramids are small-cap. Each step carries size_usd + size_source for ranking",
         "board_interlock_path — SUPPORTING: shortest board-interlock path. The *existence* of a "
         "path is near-universal (every well-connected pair links within 4 hops), so the "
         "informative output is the NAMED BRIDGING DIRECTOR, not whether a path exists",
     ],
     "honest_limits": (
         "CIK-only (understates family structure, conservative). No prediction/alpha claims. "
-        "Size is a PROXY only: institutional_value_usd sums one quarter of 13F holdings, so it "
-        "measures free float (understating concentrated-ownership issuers), is null for ~25% of "
-        "companies with no institutional coverage, and includes ETFs. No revenue, assets or true "
-        "market cap. Board/insider edges are a keep-latest snapshot; only 13D "
+        "Size is a THRESHOLD, not a market cap, and there are two measures: total_assets_usd is a "
+        "filed balance-sheet total from the Financial Statement Data Sets (~63% of the universe, "
+        "NOT comparable across sectors — a bank's assets are its balance sheet), while "
+        "institutional_value_usd sums one quarter of 13F holdings and so measures free float "
+        "(understating concentrated-ownership issuers, null for ~25%, includes ETFs). size_usd "
+        "coalesces them and size_source says which applied; ~17% have neither. No revenue and no "
+        "true market cap, so this does not support leverage or coverage ratios. "
+        "Board/insider edges are a keep-latest snapshot; only 13D "
         "filing_date is a real time series. Interlock path existence is not informative at "
         "<=4 hops. Activist screens are gated to a curated franchise list: precision over "
         "recall, so unlisted activists are missed by design. No raw Cypher."
@@ -178,8 +185,13 @@ def create_ownership_mcp_server(
         old declaration. Liberty Broadband's 26.1% of Charter was declared in 2014; its director
         was seen in 2026.
 
-        ``min_tier`` is a presumption tier (10/15/25/50). ``min_value_usd`` filters on the 13F
-        size proxy so results are recognizable names rather than nano-caps.
+        ``min_tier`` is a presumption tier (10/15/25/50). ``min_value_usd`` filters on ``size_usd``
+        — filed total assets where a 10-K/10-Q reports one, else the 13F float proxy — so results
+        are recognizable names rather than nano-caps. Preferring assets matters here specifically:
+        float is smallest exactly where ownership is concentrated, so a float-only filter hid the
+        issuers this query exists to find. EchoStar is $43B of assets and 51.8% controlled with no
+        13F coverage at all. Each row carries ``size_source``, and the count of rows excluded for
+        having no size figure is reported in metadata as ``excluded_no_size``.
 
         Caveat to state if asked: percent_of_class is percent of the class covered by the filing,
         NOT voting power — and several of the largest names are dual-class (Berkshire, the
@@ -259,16 +271,19 @@ def create_ownership_mcp_server(
         citation. Abstains (abstained=True) when the issuer has no verified control edge —
         never fabricates a chain from sub-50% or unclassified stakes.
 
-        **Scope, precisely.** Single-hop control reaches large caps: 20 of 825 controlled
-        issuers carry >=$10B of institutional ownership and 97 carry >=$1B. It is the
+        **Scope, precisely.** Single-hop control reaches large caps: 39 of 825 controlled
+        issuers are >=$10B by size_usd and 150 are >=$1B (20 and 97 under the 13F float proxy
+        alone, which understates precisely this population). It is the
         MULTI-HOP pyramids that are small-cap — those top out around $1.5B — so treat chain
         *depth* as a small-cap governance signal while single-hop control is general-purpose.
         Most large caps still have no >=50% holder and correctly abstain.
 
-        Each step carries institutional_value_usd (a 13F size proxy, null for the ~25% of
-        issuers with no institutional coverage) so results can be ranked by materiality.
+        Each step carries size_usd + size_source (filed total assets where available, else the 13F
+        float proxy; null for the ~17% with neither) so results can be ranked by materiality.
+        Assets matter most here: a controlled issuer has little float by definition, so the 13F
+        figure is null or tiny for exactly these rows.
 
-        Examples: control_chain("TMUS") returns Deutsche Telekom -> T-Mobile US (74.3%, $95B).
+        Examples: control_chain("TMUS") returns Deutsche Telekom -> T-Mobile US (74.3%, $219B).
         control_chain("Income Opportunity Realty") returns the 3-hop pyramid
         Basic Capital -> American Realty (62%) -> Transcontinental (83%) -> Income Opportunity (85%).
         """

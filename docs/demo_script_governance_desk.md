@@ -196,9 +196,13 @@ Say these before you're asked. They're part of why the rest is credible.
   roster: it lists 24 directors for Charter and 27 for Vertiv (both ~2× reality) while
   under-counting Berkshire. "Does this holder sit on the board" is answerable; "does this holder
   control the board" is not, and we don't pretend otherwise.
-- **Size is a proxy.** `institutional_value_usd` sums one quarter of 13F *share* holdings — options
-  are tracked separately, since a $14.8B put is a position, not a stake. It measures free float, is
-  null for ~25% of issuers, and includes ETFs. No revenue, assets or true market cap.
+- **Size is a threshold, not a market cap.** `size_usd` prefers `total_assets_usd` — a filed
+  balance-sheet total from the SEC Financial Statement Data Sets, 63% of the universe — and falls
+  back to `institutional_value_usd`, one quarter of 13F *share* holdings (options are tracked
+  separately: a $14.8B put is a position, not a stake). `size_source` says which you got, and it
+  matters: 13F measures free float and counts ETFs, while total assets are **not comparable across
+  sectors** — a bank's assets *are* its balance sheet. 17% of issuers have neither figure and are
+  excluded rather than ranked. No revenue, no true market cap, so no leverage or coverage ratios.
 - **Recall is deliberately capped.** Activist screens match a curated franchise list: precision over
   recall, so a first-time activist is missed by design.
 - **CIK-keyed only.** Conservative: it understates family and affiliate structure rather than

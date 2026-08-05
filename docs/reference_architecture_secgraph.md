@@ -244,20 +244,29 @@ like, and it is the one the data actually earns.
   and excluded *at projection time*, so the co-filing fact survives in the graph.
 - **No raw Cypher over the served surface.** Curated tools only — safer and more reliable in a
   POC than a text2cypher passthrough.
-- **Size is a proxy; fundamentals are still absent.** `Company.institutional_value_usd` sums one
-  quarter of 13F holdings (`materialize_materiality.py`), so results *can* now be ranked by
-  materiality — which is what surfaced the large-cap control relationships the earlier docs said
-  did not exist. Three limits travel with the figure: it measures **free float** (understating
-  concentrated-ownership issuers — conservative, never a false positive), it is **null for ~25% of
-  the universe** with no institutional coverage (absence is a signal, not a zero), and ETFs are in
-  the universe so SPY/QQQ rank high on other people's money. There is still **no revenue, assets or
-  true market cap** — the remaining gap for anything fundamental (leverage, coverage ratios,
-  exposure sizing), which is where SEC DERA XBRL would earn its keep if the audience shifts to
-  credit risk.
+- **Size is a threshold, not a market cap — two measures, both labelled.** `size_usd`
+  (`materialize_materiality.py`) prefers `total_assets_usd`, a **filed balance-sheet total** parsed
+  from the SEC Financial Statement Data Sets (`load_company_financials.py`, **63%** of the
+  universe, citable via `total_assets_accession`), and falls back to `institutional_value_usd`, one
+  quarter of 13F holdings (**75%**). Combined coverage **83%**; `size_source` records which applied.
+  This closes what an earlier version of this document named as the remaining gap — *"which is
+  where SEC DERA XBRL would earn its keep if the audience shifts to credit risk"* — because the 13F
+  proxy measures **free float**, and float is smallest exactly where ownership is concentrated. The
+  effect is measurable: controlled issuers at ≥$10B went **20 → 39** and at ≥$1B **97 → 150**, and
+  EchoStar ($43.0B assets, 51.8% controlled) has *no* 13F coverage at all, so it could not
+  previously appear in any size-filtered result.
+  Limits, each specific to its measure: 13F understates concentrated ownership and counts ETFs
+  (SPY/QQQ rank high on other people's money); total assets are **not comparable across sectors**
+  (a bank's assets *are* its balance sheet), are point-in-time, and are absent for ETFs, funds and
+  many foreign filers. **17% of the universe has neither** and is excluded from size-filtered
+  results rather than ranked — `influence_map` now reports that count as `excluded_no_size` instead
+  of dropping the rows silently. Still **no revenue and no true market cap**, so leverage and
+  coverage ratios remain out of scope.
 - **Chain *depth* is a small-cap signal; single-hop control is not.** Measured on the built graph,
-  **20 of 825** controlled issuers carry ≥$10B of institutional ownership and 97 carry ≥$1B —
-  Deutsche Telekom 74.3% of T-Mobile US, Brookfield 72.9% of Brookfield Asset Management, GE 62.6%
-  of Baker Hughes, Woodbridge 70% of Thomson Reuters. The **multi-hop** pyramids remain small-cap
+  **39 of 825** controlled issuers are ≥$10B by `size_usd` and **150** are ≥$1B (20 and 97 under
+  the float-only proxy) — Deutsche Telekom 74.3% of T-Mobile US, Ergen 51.8% of EchoStar,
+  Brookfield 72.9% of Brookfield Asset Management, GE 62.6% of Baker Hughes, Woodbridge 70% of
+  Thomson Reuters. The **multi-hop** pyramids remain small-cap
   (the largest, Teekay Tankers, is ~$1.5B), so depth is the governance/minority-risk screen while
   single-hop control is general-purpose. This corrects an earlier claim that *every* verified chain
   was micro/nano-cap: the large ones were always present, but with no size column the output never

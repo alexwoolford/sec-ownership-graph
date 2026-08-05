@@ -6,9 +6,11 @@ control relationship over T-Mobile US and one over a $30 shell rendered as peer 
 demo's own docs conceded "no materiality data — results cannot be ranked by 'does this matter'"
 and called it the largest remaining gap.
 
-The gap turned out to be presentational, not a data gap. Measured on the built graph, **20 of 825
-controlled issuers carry ≥$10B** of institutional ownership and 97 carry ≥$1B — Deutsche Telekom
-at 74.3% of T-Mobile, GE at 62.6% of Baker Hughes, Woodbridge at 70% of Thomson Reuters. The
+The gap turned out to be presentational, not a data gap. Measured on the built graph, **39 of 825
+controlled issuers are ≥$10B** by ``size_usd`` and 150 are ≥$1B — Deutsche Telekom at 74.3% of
+T-Mobile, Ergen at 51.8% of EchoStar, GE at 62.6% of Baker Hughes, Woodbridge at 70% of Thomson
+Reuters. (Those counts were 20 and 97 when size was 13F float alone; see ``materialize_size``
+below and :mod:`financials` for why float understates this population specifically.) The
 activist coalition already co-targets Deere, Freeport, Ecolab and Occidental. **Those findings were
 always there; there was simply no column to sort by, so the output surfaced closed-end funds and
 nano-caps first and the recognizable names sank.** One ``sum()`` over the 13F edges already loaded
@@ -81,6 +83,95 @@ _CLEAR_QUERY = """
 """
 
 _UNIVERSE_QUERY = "MATCH (c:Company) RETURN count(c) AS n"
+
+# The combined measure every size filter and ranking reads. Written here rather than in a third
+# materializer because it is a function of the two inputs and must never drift from them.
+#
+# Precedence is total_assets_usd first, deliberately: it is a real balance sheet, where
+# institutional_value_usd is free float and therefore smallest exactly where ownership is
+# concentrated. EchoStar carries $43B of assets, is 51.8% controlled, and has NO 13F coverage at
+# all — so under the float-only measure it was invisible to every size-filtered query.
+#
+# size_source is not decoration. A $43B assets figure and a $43B float figure are different
+# claims about different quantities, and without the label they are indistinguishable in output.
+# Any consumer that renders size_usd must be able to say which one it got.
+_SIZE_QUERY = """
+    MATCH (c:Company)
+    WHERE c.total_assets_usd IS NOT NULL OR c.institutional_value_usd IS NOT NULL
+    SET c.size_usd = coalesce(c.total_assets_usd, c.institutional_value_usd),
+        c.size_source = CASE
+            WHEN c.total_assets_usd IS NOT NULL THEN 'dera_assets'
+            ELSE 'institutional_13f' END
+    RETURN count(c) AS n
+"""
+
+# Clear first, always — not just on --replace. An issuer that loses BOTH inputs must lose
+# size_usd too, and a company that gains assets must flip size_source away from the 13F label.
+# Recomputing in place without clearing would leave a stale figure that outranks live ones.
+_SIZE_CLEAR_QUERY = """
+    MATCH (c:Company)
+    WHERE c.size_usd IS NOT NULL OR c.size_source IS NOT NULL
+    REMOVE c.size_usd, c.size_source
+    RETURN count(c) AS n
+"""
+
+_SIZE_BREAKDOWN_QUERY = """
+    MATCH (c:Company) WHERE c.size_source IS NOT NULL
+    RETURN c.size_source AS source, count(*) AS n
+    ORDER BY n DESC
+"""
+
+
+def materialize_size(
+    driver,
+    database: str | None = None,
+    execute: bool = False,
+    logger_instance: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """Recompute ``size_usd`` / ``size_source`` from the two size inputs. Dry-run unless execute.
+
+    Idempotent and safe to run whenever either input changes. Must run **after** both
+    ``institutional_value_usd`` and ``total_assets_usd`` are loaded, since it reads both; running
+    it earlier is not an error but yields partial coverage.
+    """
+    log = logger_instance or logger
+
+    with driver.session(database=database) as session:
+        universe = session.run(_UNIVERSE_QUERY).single()["n"]
+        sizable = session.run(
+            """
+            MATCH (c:Company)
+            WHERE c.total_assets_usd IS NOT NULL OR c.institutional_value_usd IS NOT NULL
+            RETURN count(c) AS n
+            """
+        ).single()["n"]
+
+    log.info(
+        f"combined size measure: {sizable:,} of {universe:,} companies "
+        f"({100 * sizable / universe:.1f}%) have at least one size input"
+    )
+
+    if not execute:
+        log.info(f"DRY RUN — would set size_usd/size_source on {sizable:,} Company nodes")
+        return {"sizable": sizable, "universe": universe, "dry_run": True}
+
+    with driver.session(database=database) as session:
+        cleared = session.run(_SIZE_CLEAR_QUERY).single()["n"]
+        written = session.run(_SIZE_QUERY).single()["n"]
+        breakdown = {r["source"]: r["n"] for r in session.run(_SIZE_BREAKDOWN_QUERY)}
+
+    log.info(
+        f"✓ size_usd set on {written:,} companies "
+        f"(assets {breakdown.get('dera_assets', 0):,} · 13F float "
+        f"{breakdown.get('institutional_13f', 0):,}) · {universe - written:,} remain unsized"
+    )
+    return {
+        "sizable": sizable,
+        "universe": universe,
+        "cleared": cleared,
+        "written": written,
+        "by_source": breakdown,
+    }
 
 
 # --------------------------------------------------------------------------- #

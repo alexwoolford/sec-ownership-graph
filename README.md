@@ -161,12 +161,16 @@ Read these before demoing — they are part of what makes the rest credible.
 
 - **No prediction.** The alpha question was tested and came back null. Efficient markets; 13Ds are
   public. This is a structural and temporal map, not a signal.
-- **Size is a proxy, not a market cap.** `Company.institutional_value_usd` sums one quarter of
-  13F holdings so results *can* be ranked by materiality — but it measures **free float** (so it
-  understates concentrated-ownership issuers, conservatively), is **null for ~25% of the universe**
-  (no institutional coverage — which is itself a signal, not a zero), and counts ETFs. There is
-  still no revenue, assets or true market cap. Bring your own universe filter for anything
-  fundamental.
+- **Size is a threshold, not a market cap — and there are two measures.** `size_usd` is what
+  filters and ranks: it prefers `total_assets_usd`, a **filed balance-sheet total** from the SEC
+  Financial Statement Data Sets (**63%** of the universe), and falls back to
+  `institutional_value_usd`, one quarter of 13F holdings (**75%**). Combined coverage is **83%**;
+  `size_source` records which applied, and **17% have neither** and are excluded from
+  size-filtered results rather than ranked. Each has a distinct limit: 13F measures **free float**,
+  so it understates concentrated-ownership issuers and counts ETFs; total assets are **not
+  comparable across sectors** — a bank's assets *are* its balance sheet, so JPMorgan's $4.4T is not
+  "bigger than" a $200B industrial in any meaningful sense. Still **no revenue and no true market
+  cap**, so this does not support leverage or coverage ratios.
 - **Activist screens trade recall for precision.** Gated to a curated franchise list; ungated
   detection is dominated by micro-cap founders crossing 5% and by filing-group artifacts (one
   manager filing through seven affiliated vehicles). First-time activists are missed by design.
@@ -188,11 +192,14 @@ Read these before demoing — they are part of what makes the rest credible.
   New 13Ds can also *remove* a convergence hit, because the screen measures a total span rather
   than a rolling window. Compare against `results/secgraph_freshness.json` (`as_of`) before
   concluding something broke.
-- **Chain *depth* is a small-cap signal; single-hop control is not.** 20 of 825 controlled issuers
-  carry ≥$10B of institutional ownership — Deutsche Telekom holds 74.3% of T-Mobile US, GE held
-  62.6% of Baker Hughes. But the **multi-hop** pyramids top out near $1.5B, so read a deep chain as
-  a small-cap governance screen and a single-hop one as general-purpose. Most large caps have no
-  ≥50% holder at all and correctly abstain.
+- **Chain *depth* is a small-cap signal; single-hop control is not.** **39 of 825** controlled
+  issuers are ≥$10B by `size_usd` and **150** are ≥$1B — Deutsche Telekom holds 74.3% of T-Mobile
+  US ($219.2B in assets), Ergen holds 51.8% of EchoStar ($43.0B). Those counts were **20 and 97**
+  when size was 13F float alone: a controlled issuer has little float by definition, so the float
+  proxy was hiding exactly this population — EchoStar has *no* 13F coverage at all. But the
+  **multi-hop** pyramids top out near $1.5B, so read a deep chain as a small-cap governance screen
+  and a single-hop one as general-purpose. Most large caps have no ≥50% holder and correctly
+  abstain.
 - **Board-interlock path *existence* is uninformative.** Measured: every well-connected pair links
   within 4 hops. The named bridging director is the signal, not the connection.
 - **CIK-keyed only.** Deliberately conservative — understates family/affiliate structure rather

@@ -140,6 +140,50 @@ count, and whether the position is stock, a **put**, or a **call**.
 > shares** — the rest was $14.8B of puts and $3.9B of calls. Most aggregators conflate these. A
 > put is a position, not a stake.
 
+### Financial Statement Data Sets — balance-sheet size
+
+Not an ownership filing at all. This is the SEC's quarterly dump of the **XBRL facts** companies
+tag in their 10-K and 10-Q filings — the actual financial statements, machine-readable.
+
+The graph uses exactly one fact from it: **total assets**.
+
+- **In the graph:** `Company.total_assets_usd`, plus `total_assets_period` (the balance-sheet date)
+  and `total_assets_accession` (so the number is citable). **5,014 of 8,000 companies (63%)**.
+- **Source:** [Financial Statement Data Sets](https://www.sec.gov/dera/data/financial-statement-data-sets)
+  — `sub.txt` (submissions) and `num.txt` (numeric facts). ~100 MB per quarter zipped.
+- **Loader:** `secgraph/ingestion/ownership/financials.py`
+
+**Why it's here.** The other size measure, `institutional_value_usd`, sums 13F holdings — which
+means it measures **free float**. Float is smallest exactly where ownership is concentrated, so the
+one property used to filter for materiality was systematically blind to the issuers this graph
+exists to describe. Measured: of the 825 companies with a `CONTROLS` edge, **462 looked sub-$100M
+and 294 could not be sized at all**.
+
+The worked example is EchoStar: **$43.0B of total assets, 51.8% controlled by Charlie Ergen, and no
+13F coverage whatsoever.** It could not appear in any size-filtered result. After adding assets,
+controlled issuers at ≥$10B went **20 → 39**, and at ≥$1B **97 → 150**.
+
+`size_usd` coalesces the two — assets first, 13F float as fallback — and `size_source` records
+which applied. Combined coverage is **83%**; the remaining 17% are excluded from size-filtered
+results rather than ranked, and `influence_map` reports that count rather than dropping rows
+silently.
+
+> **Total assets is not a general "size" number, and this is the caveat to state out loud.** A
+> bank's assets *are* its balance sheet: JPMorgan's $4.4T is not "bigger than" a $200B industrial in
+> any economically meaningful sense. It is a threshold *within* a peer set, not a cross-sector
+> ranking. It is also point-in-time, says nothing about equity value or leverage, and is absent for
+> ETFs, funds and many foreign filers — a null means "not reported here", never zero.
+
+> **Extraction is narrower than it looks.** Only `tag='Assets'`, `uom='USD'`, `qtrs=0` (a balance
+> sheet is an instant, not a duration), and **empty `segments` and `coreg`**. That last filter is
+> the one that silently corrupts the figure if dropped: a segmented row is one business line and a
+> co-registrant row is a subsidiary, so including either mixes part-of-company values into a
+> consolidated series — no error, just whichever row sorted last.
+
+**Revenue is deliberately not loaded.** It needs a four-tag fallback chain *and* annual-vs-quarterly
+normalization, and still resolves fewer companies (3,833 vs 5,020). Assets is one tag,
+point-in-time, no normalization — a better answer for materially less parsing risk.
+
 ### The company universe
 
 The 8,000 `Company` nodes come from
@@ -241,8 +285,10 @@ Stated up front, because knowing the limits is what makes the rest usable:
   roughly half the control edges predate 2020. Goldcorp is still on file owning 75% of Wheaton
   from a **2006** filing — Goldcorp was absorbed by Newmont in 2019. Answers report the filing year
   and flag evidence over 5 years old. Treat an old stake as a lead, not a fact.
-- **Size is a proxy.** `institutional_value_usd` sums one quarter of 13F *share* holdings. It
-  measures free float, is null for ~25% of issuers, includes ETFs, and is not market cap.
+- **Size is a threshold, not a market cap.** Two measures with different meanings — filed total
+  assets (63%, not cross-sector comparable) and 13F free float (75%, understates concentrated
+  ownership, counts ETFs). `size_usd` coalesces them, `size_source` says which. 17% have neither.
+  No revenue, so no leverage or coverage ratios.
 - **Activist screens trade recall for precision.** They match a curated franchise list, so a
   first-time activist is missed by design.
 

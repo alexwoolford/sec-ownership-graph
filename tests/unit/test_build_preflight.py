@@ -83,7 +83,9 @@ class TestProvenance:
         assert prov["as_of_pinned"] is True
         assert prov["quarters_345_requested"] == 12
         assert prov["quarters_13f_requested"] == 4
-        assert set(prov["staged_periods"]) == {"form345", "form13f", "ftd"}
+        # "fsds" (Financial Statement Data Sets) drives total_assets_usd coverage, so its resolved
+        # quarters belong in the manifest for the same reason the other three do.
+        assert set(prov["staged_periods"]) == {"form345", "form13f", "ftd", "fsds"}
 
     def test_unpinned_build_is_flagged(self):
         prov = pipeline.collect_provenance(as_of=None, quarters_345=12, quarters_13f=4)

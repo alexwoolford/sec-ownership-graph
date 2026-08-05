@@ -39,6 +39,10 @@ _EXPECTED_TOOLS = frozenset(
         "board_interlock_path",
         "activist_coalition",
         "ownership_snapshot",
+        # The demo's headline tool. It was registered on the server but missing from this list,
+        # so the catalog check reported "extra=['influence_map']" and the smoke test failed on a
+        # tool that was working correctly.
+        "influence_map",
         "get_secgraph_schema",
     }
 )

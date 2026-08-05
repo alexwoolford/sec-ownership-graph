@@ -63,6 +63,13 @@ _DENSITY_NO_GO_EXIT = 2
 _QUARTERS_345 = 16
 _QUARTERS_13F = 4
 _QUARTERS_FTD = 14
+# Financial Statement Data Sets, for Company.total_assets_usd. Coverage saturates with depth the
+# way Form 345 does, because a company appears only in the quarters it filed in: measured
+# 2026-08-04, one quarter resolves 5,079 CIKs and four resolve 5,929 (5,014 of them in the
+# tickered universe, 62.7%). Four is the knee of that curve — more quarters cost ~100 MB each for
+# single-digit gains. Deliberately NOT caller-overridable, following _QUARTERS_FTD: unlike
+# quarters_345 it decides nothing about whether the build passes a gate.
+_QUARTERS_FSDS = 4
 
 
 @dataclass
@@ -290,12 +297,38 @@ def _steps(
             # --replace on refresh: a changed crosswalk requires re-loading HOLDS cleanly.
             extra_args=[*db] + (["--replace"] if refresh else []),
         ),
-        # Derived size proxy. Must follow the 13F load — it sums HOLDS.value_usd. This is what
-        # makes every structural result rankable by materiality; without it a $95B control
+        # Balance-sheet size from the Financial Statement Data Sets. Its ONLY hard dependency is
+        # the Company universe (it MATCHes Company {cik}), so it could run much earlier — placing
+        # it here is a *preference*, not a data dependency, and the reason is worth stating so a
+        # future reader does not infer a constraint that isn't there: running it earlier would put
+        # a network-dependent step ahead of the density gate, adding a fresh way to abort an
+        # expensive build before the gate ever runs. It must, however, precede
+        # materialize_materiality.py, which reads total_assets_usd to compute size_usd.
+        Step(
+            "download_ownership_data.py",
+            "Phase 3 stage — download Financial Statement Data Sets (balance-sheet size)",
+            adds_execute=False,
+            extra_args=["--form", "fsds", "--quarters", str(_QUARTERS_FSDS)]
+            + as_of_args
+            + (["--refresh"] if refresh else []),
+        ),
+        Step(
+            "load_company_financials.py",
+            "Phase 3 — load Company.total_assets_usd (filed total assets)",
+            # as_of is passed at LOAD time too, not just download: staged_zip_paths globs the whole
+            # local cache, so a machine that once staged more quarters would otherwise load a
+            # wider window than a fresh clone from the same command.
+            extra_args=[*db, "--quarters", str(_QUARTERS_FSDS)]
+            + as_of_args
+            + (["--replace"] if refresh else []),
+        ),
+        # Derived size measures. Must follow BOTH the 13F load (it sums HOLDS.value_usd) and the
+        # financials load (size_usd coalesces total_assets_usd over the float proxy). This is what
+        # makes every structural result rankable by materiality; without it a $219B control
         # relationship and a $30 one render as peer rows.
         Step(
             "materialize_materiality.py",
-            "Derived — materialize the institutional-value size proxy on Company",
+            "Derived — materialize the size measures on Company (assets, 13F float, combined)",
             extra_args=[*db] + (["--replace"] if refresh else []),
         ),
     ]
@@ -636,7 +669,9 @@ def collect_provenance(
     a live LLM run.
     """
     staged: dict[str, list[str]] = {}
-    for subdir in ("form345", "form13f", "ftd"):
+    # "fsds" included: the resolved staged quarters are what decide total_assets_usd coverage, so
+    # without them a cloner comparing assets figures cannot tell drift from breakage.
+    for subdir in ("form345", "form13f", "ftd", "fsds"):
         try:
             paths = staged_zip_paths(subdir, as_of=as_of)
         except OSError:  # pragma: no cover - cache dir may not exist on a partial build

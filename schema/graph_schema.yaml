@@ -28,9 +28,11 @@ nodes:
     description: >
       A public issuer that files with the SEC. The universe is SEC filers with a ticker
       (see scripts/load_company_universe.py); every ownership edge attaches to one of these.
-      NOTE: no revenue, assets or true market cap. `institutional_value_usd` is a size PROXY
-      derived from 13F holdings (see that property) and is absent for ~25% of the universe.
-      See docs/reference_architecture_secgraph.md "Honest limits".
+      NOTE: no revenue and no true market cap. Two size measures exist, and they are different
+      claims: `total_assets_usd` is a real balance-sheet figure from the Financial Statement Data
+      Sets (~63% of the universe), while `institutional_value_usd` is a 13F free-float PROXY
+      (~75%). `size_usd` coalesces them and `size_source` says which one applied. See each
+      property, and docs/reference_architecture_secgraph.md "Honest limits".
     required_properties:
       cik: {type: String, description: "SEC Central Index Key — the hard key everything joins on"}
       name: {type: String, description: "Company legal name"}
@@ -58,6 +60,54 @@ nodes:
           The 13F report_period institutional_value_usd was summed over. Required for
           auditability: the figure is one quarter's snapshot, not a running total, and 13F has a
           2024 coverage step-up — so the period must travel with the number.
+      total_assets_usd:
+        type: Float
+        description: >
+          Total consolidated assets as reported on the balance sheet (XBRL tag "Assets", uom USD,
+          qtrs=0, no segment/coreg breakdown), from the SEC Financial Statement Data Sets and
+          keyed on the CIK in sub.txt. Exists because institutional_value_usd measures FREE
+          FLOAT, which by construction understates the concentrated-ownership issuers this graph
+          is about: EchoStar carries $60.9B of assets and is 51.8% controlled, yet has no 13F
+          coverage at all. Limits: (1) ABSENT for ~42% of the universe — no 10-K/10-Q in the
+          staged window covers ETFs, funds and many foreign filers, and a null means "not
+          reported here", never zero; (2) NOT comparable across sectors — a bank's assets are its
+          balance sheet, so JPMorgan's $4.0T is not "bigger than" a $200B industrial in any
+          economically meaningful sense; (3) it is a point-in-time balance, not market value, and
+          says nothing about equity value or leverage. Written by load_company_financials.py.
+      total_assets_period:
+        type: Date
+        description: >
+          The XBRL ddate total_assets_usd was read from — the balance-sheet date, not the filing
+          date. Required for auditability for the same reason as institutional_value_period: the
+          figure is one instant, and the staged window moves with --quarters-fsds.
+      total_assets_accession:
+        type: String
+        description: >
+          The SEC accession number of the 10-K/10-Q the assets figure came from, so the number is
+          citable per the evidence-or-abstain rule. This is strictly better than
+          institutional_value_usd, which is an aggregate over thousands of 13F edges and carries
+          no single citation. Also the tiebreak that makes the figure reproducible: measured on
+          2026q1, one (cik, ddate) pair reports two different values from two accessions (an
+          original and an amendment), so without a total order two builds over identical inputs
+          could publish different figures. Highest accession — the later filing — wins.
+      size_usd:
+        type: Float
+        description: >
+          The combined size measure used for filtering and ranking:
+          coalesce(total_assets_usd, institutional_value_usd). Prefers the real balance sheet and
+          falls back to 13F float, which lifts coverage from 75% (13F alone) to ~85%. Neither
+          input is modified, so published float-based figures stay comparable. ALWAYS read
+          size_source alongside it — a $60.9B assets figure and a $60.9B float figure are
+          different claims. Null means neither source could size the issuer; such rows are
+          excluded from size-filtered results and the exclusion count is reported rather than
+          silently dropped. Written by materialize_materiality.py.
+      size_source:
+        type: String
+        description: >
+          Which input produced size_usd: "dera_assets" (balance-sheet Assets) or
+          "institutional_13f" (13F free-float proxy). Absent when size_usd is null. This is what
+          keeps a size-ranked answer auditable — without it the two measures are
+          indistinguishable in output despite meaning different things.
 
   Insider:
     unique_key: cik

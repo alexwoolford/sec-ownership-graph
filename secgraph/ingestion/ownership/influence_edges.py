@@ -9,6 +9,11 @@ recognizes. Measured on the built graph, median issuer size rises *monotonically
     >=50%  825 issuers   median $35.7M   max  $92.6B
     >=25% 1676 issuers   median $79.8M   max $479.9B   (Berkshire, Walmart, Charter, Ferrari)
 
+(Those figures are the 13F float proxy, which is what the measurement was made against. Under
+``size_usd`` — filed total assets where available — the same >=50% population reads far larger:
+39 issuers >=$10B rather than 20. The anti-selection is real, but part of what it was measuring
+was the float proxy's own blind spot. See :mod:`financials`.)
+
 So the >=50% filter was finding illiquidity as much as control. The fix is not to loosen
 ``CONTROLS`` — that would make the word "control" mean a 25% stake, which invites a correct
 objection and costs the room. It is to add a **separately named** edge at the thresholds US bank
