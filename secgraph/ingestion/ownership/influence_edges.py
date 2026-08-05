@@ -6,8 +6,8 @@ be **structurally anti-selected for large caps**: an issuer with a majority hold
 float, so it is largely absent from major indices and from the size range a finance professional
 recognizes. Measured on the built graph, median issuer size rises *monotonically* as the bar falls:
 
-    >=50%  825 issuers   median $35.7M   max  $94.6B
-    >=25% 1676 issuers   median $79.8M   max $495.2B   (Berkshire, Walmart, Charter, Ferrari)
+    >=50%  825 issuers   median $35.7M   max  $92.6B
+    >=25% 1676 issuers   median $79.8M   max $479.9B   (Berkshire, Walmart, Charter, Ferrari)
 
 So the >=50% filter was finding illiquidity as much as control. The fix is not to loosen
 ``CONTROLS`` — that would make the word "control" mean a 25% stake, which invites a correct

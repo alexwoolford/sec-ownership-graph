@@ -178,7 +178,7 @@ every hop citing an SEC accession number. Nothing has to be built for that readi
 Cypher:
 
 ```
-control_chain("TMUS")  →  DEUTSCHE TELEKOM AG —74.3%→ T-Mobile US, Inc.  ($94.6B institutional)
+control_chain("TMUS")  →  DEUTSCHE TELEKOM AG —74.3%→ T-Mobile US, Inc.  ($92.6B institutional)
                           cited: 0001193125-13-214474 (2013-05-10)
 ```
 
@@ -255,7 +255,7 @@ like, and it is the one the data actually earns.
   exposure sizing), which is where SEC DERA XBRL would earn its keep if the audience shifts to
   credit risk.
 - **Chain *depth* is a small-cap signal; single-hop control is not.** Measured on the built graph,
-  **20 of 825** controlled issuers carry ≥$10B of institutional ownership and 99 carry ≥$1B —
+  **20 of 825** controlled issuers carry ≥$10B of institutional ownership and 97 carry ≥$1B —
   Deutsche Telekom 74.3% of T-Mobile US, Brookfield 72.9% of Brookfield Asset Management, GE 62.6%
   of Baker Hughes, Woodbridge 70% of Thomson Reuters. The **multi-hop** pyramids remain small-cap
   (the largest, Teekay Tankers, is ~$1.5B), so depth is the governance/minority-risk screen while

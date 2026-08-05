@@ -262,7 +262,7 @@ def create_ownership_mcp_server(
         never fabricates a chain from sub-50% or unclassified stakes.
 
         **Scope, precisely.** Single-hop control reaches large caps: 20 of 825 controlled
-        issuers carry >=$10B of institutional ownership and 99 carry >=$1B. It is the
+        issuers carry >=$10B of institutional ownership and 97 carry >=$1B. It is the
         MULTI-HOP pyramids that are small-cap — those top out around $1.5B — so treat chain
         *depth* as a small-cap governance signal while single-hop control is general-purpose.
         Most large caps still have no >=50% holder and correctly abstain.
