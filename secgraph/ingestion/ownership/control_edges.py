@@ -101,7 +101,11 @@ _WRITE_QUERY = """
     MERGE (b)-[r:CONTROLS]->(c)
     SET r.percent_of_class = row.percent_of_class,
         r.accession_number = row.accession_number,
-        r.filing_date = row.filing_date,
+        // A real date, not a string. 13D carries no exit obligation below 5%, so a percent is
+        // LAST KNOWN, not current — and half these edges predate 2020. Goldcorp's 75% of Wheaton
+        // was filed in 2006 and Goldcorp ceased to exist in 2019. The date has to travel with the
+        // edge and be comparable, or the graph presents history as the present tense.
+        r.filing_date = date(row.filing_date),
         r.source = $source,
         r.computed_at = datetime()
     RETURN count(r) AS n

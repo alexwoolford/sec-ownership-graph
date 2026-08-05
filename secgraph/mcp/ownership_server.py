@@ -189,9 +189,7 @@ def create_ownership_mcp_server(
         Broadband/Charter 26.1% (seat 2026-06), Huffman/Reddit 61.5% (seat 2026-06).
         """
         return _envelope(
-            engine.influence_map(
-                min_tier=min_tier, min_value_usd=min_value_usd, limit=limit
-            ),
+            engine.influence_map(min_tier=min_tier, min_value_usd=min_value_usd, limit=limit),
             freshness,
         )
 

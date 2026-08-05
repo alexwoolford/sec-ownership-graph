@@ -47,6 +47,14 @@ from secgraph.ingestion.ownership.graph_native_proof import is_custodial_hub
 
 logger = logging.getLogger(__name__)
 
+
+def _current_year() -> int:
+    """Today's year — the reference point for judging evidence age."""
+    from datetime import date
+
+    return date.today().year
+
+
 # Default traversal depth for chain/path queries. Deliberately bounded: control pyramids
 # and board-interlock paths deeper than this are vanishingly rare in the data and unbounded
 # depth invites hub blow-up. Callers can raise it explicitly.
@@ -109,6 +117,38 @@ def render_control_chain(
 ) -> list[dict[str, Any]]:
     """Turn a ``[(cik, pct), ...]`` chain into named, cited steps for output."""
     return [{"cik": cik, "name": names.get(cik, cik), "pct": pct} for cik, pct in chain]
+
+
+# A supporting filing older than this makes an answer last-known rather than current. Chosen
+# because 13D carries no exit obligation once a holder drops below 5%, so an old percent has no
+# corroboration at all — and half the CONTROLS population predates 2020.
+STALE_EVIDENCE_YEARS = 5
+
+
+def evidence_age(
+    evidence: list[dict[str, Any]], as_of_year: int, stale_after: int = STALE_EVIDENCE_YEARS
+) -> dict[str, Any]:
+    """Filing years behind an answer, and whether the freshest is stale.
+
+    Presenting a percent without its date tells a reader a 2006 fact in the present tense —
+    Goldcorp's 75% of Wheaton is on file from 2006, and Goldcorp ceased to exist in 2019. The age
+    belongs in the answer so the reader can supply their own scepticism.
+    """
+    years = sorted(
+        {
+            int(str(e["filing_date"])[:4])
+            for e in evidence
+            if str(e.get("filing_date") or "")[:4].isdigit()
+        }
+    )
+    if not years:
+        return {"evidence_years": [], "stale_evidence": False, "stale_after_years": stale_after}
+    return {
+        "evidence_years": years,
+        # Judged on the NEWEST filing: one fresh confirmation redeems a chain with old links.
+        "stale_evidence": (as_of_year - max(years)) > stale_after,
+        "stale_after_years": stale_after,
+    }
 
 
 def coalition_of(components: list[set[str]], anchor_cik: str) -> set[str]:
@@ -491,6 +531,7 @@ class OwnershipIntelligenceEngine:
                 "chains": chains[:10],
                 "chain_count": len(chains),
                 "deepest_hops": max(len(c) - 1 for c in chains),
+                **evidence_age(evidence, as_of_year=_current_year()),
             },
             evidence=evidence,
             metadata=meta,
@@ -874,6 +915,19 @@ class OwnershipIntelligenceEngine:
                     f"{s['name']} ({s['pct']:.0f}%)" if s["pct"] else s["name"] for s in chain
                 )
                 lines.append(f"  [{len(chain) - 1}h] {steps}")
+            # Age is part of the answer, not a footnote. Goldcorp's 75% of Wheaton was filed in
+            # 2006 and Goldcorp ceased to exist in 2019 — a reader shown "75%" with no date is
+            # being told a 2006 fact in the present tense.
+            if r.result.get("evidence_years"):
+                yrs = r.result["evidence_years"]
+                span = f"{min(yrs)}" if len(set(yrs)) == 1 else f"{min(yrs)}–{max(yrs)}"
+                lines.append(f"  Evidence filed: {span}.")
+            if r.result.get("stale_evidence"):
+                lines.append(
+                    "  ⚠ Newest supporting filing is over "
+                    f"{r.result['stale_after_years']} years old. 13D carries no exit obligation "
+                    "below 5%, so this is a LAST-KNOWN stake, not a confirmed current one."
+                )
             lines.append("Evidence (13D filings):")
             for e in r.evidence[:10]:
                 lines.append(
