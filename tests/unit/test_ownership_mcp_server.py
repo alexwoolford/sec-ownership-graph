@@ -74,13 +74,20 @@ def test_schema_declares_the_material_limits():
     from secgraph.mcp.ownership_server import _SECGRAPH_SCHEMA
 
     limits = _SECGRAPH_SCHEMA["honest_limits"]
-    # Size is now available but only as a proxy. Each caveat must survive, because an agent
-    # that reads "size" without them will over-trust the figure: it is free-float-based, has a
-    # ~25% coverage hole, and is not a market cap.
-    assert "PROXY" in limits
+    # There are now TWO size measures and every caveat on both must survive, because an agent
+    # that reads "size" without them will over-trust the figure.
+    #
+    # 13F float: free-float-based, ~25% coverage hole.
     assert "free float" in limits
     assert "25%" in limits
+    # Filed total assets: the cross-sector trap. A bank's assets ARE its balance sheet, so
+    # ranking JPMorgan's $4.4T against an industrial's is meaningless — an agent told only
+    # "total assets" would happily do exactly that.
+    assert "total_assets_usd" in limits
+    assert "comparable across sectors" in limits
+    # Neither is a market cap, and the combined measure must name its own coverage hole.
     assert "market cap" in limits
+    assert "size_source" in limits
     assert "franchise" in limits  # activist screens trade recall for precision
     assert "4 hops" in limits  # interlock existence is not informative
 

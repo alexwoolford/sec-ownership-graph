@@ -243,9 +243,11 @@ def chains_from_paths(
         if len(steps) < 2:
             continue
 
-        # `institutional_value_usd` rides along on each step so a consumer can see the scale of
-        # the controlled issuer. Without it, Deutsche Telekom's 74.3% of T-Mobile ($95B) and a
-        # 74% stake in a $30 shell render identically.
+        # Size rides along on each step so a consumer can see the scale of the controlled issuer.
+        # Without it, Deutsche Telekom's 74.3% of T-Mobile and a 74% stake in a $30 shell render
+        # identically. `size_usd` prefers the balance sheet, which matters most *here*: a
+        # controlled issuer has little float by definition, so the 13F figure is null or tiny for
+        # exactly these rows — EchoStar is $43B of assets with no 13F coverage at all.
         rendered = [
             {
                 "cik": steps[0].get("cik"),
@@ -253,6 +255,8 @@ def chains_from_paths(
                 "ticker": steps[0].get("ticker"),
                 "pct": 0.0,
                 "institutional_value_usd": steps[0].get("institutional_value_usd"),
+                "size_usd": steps[0].get("size_usd"),
+                "size_source": steps[0].get("size_source"),
             }
         ]
         for idx, step in enumerate(steps[1:]):
@@ -263,6 +267,8 @@ def chains_from_paths(
                     "ticker": step.get("ticker"),
                     "pct": pcts[idx] if idx < len(pcts) else None,
                     "institutional_value_usd": step.get("institutional_value_usd"),
+                    "size_usd": step.get("size_usd"),
+                    "size_source": step.get("size_source"),
                 }
             )
         chains.append(rendered)
@@ -369,7 +375,8 @@ class OwnershipIntelligenceEngine:
             WHERE size(ctrl) >= 1
             RETURN [n IN nodes(p) WHERE NOT (n:BeneficialOwner AND n <> head(nodes(p)))
                     | {{cik: n.cik, name: coalesce(n.name, n.cik), ticker: n.ticker,
-                         institutional_value_usd: n.institutional_value_usd}}] AS steps,
+                         institutional_value_usd: n.institutional_value_usd,
+                         size_usd: n.size_usd, size_source: n.size_source}}] AS steps,
                    [r IN ctrl | r.percent_of_class] AS pcts,
                    [r IN ctrl | r.accession_number] AS accessions,
                    [r IN ctrl | r.filing_date] AS filing_dates,
@@ -445,11 +452,12 @@ class OwnershipIntelligenceEngine:
 
         Without this the coalition reported *who* was in it but only CIKs for *what* they were
         targeting, so the output read as opaque and the recognizable names were invisible. Ranked
-        by ``institutional_value_usd`` because the unranked view surfaced $15M closed-end funds
-        ahead of Deere and Occidental — the same names were always there, just unsorted.
+        by ``size_usd`` because the unranked view surfaced $15M closed-end funds ahead of Deere and
+        Occidental — the same names were always there, just unsorted.
 
-        ``value_usd`` is null for issuers with no 13F coverage; they sort last rather than being
-        treated as zero (absence means "not institutionally held", not "smallest").
+        ``value_usd`` is null only when *neither* size input exists; those sort last rather than
+        being treated as zero (absence means "unknown", not "smallest"). ``value_source`` says
+        which measure applied, since a balance-sheet total and a free-float total differ.
         """
         rows = session.run(
             """
@@ -457,12 +465,12 @@ class OwnershipIntelligenceEngine:
             WHERE m.cik IN $ciks
             WITH c, collect(DISTINCT m.name) AS filers
             RETURN c.cik AS cik, c.ticker AS ticker, coalesce(c.name, c.cik) AS name,
-                   c.institutional_value_usd AS value_usd,
+                   c.size_usd AS value_usd, c.size_source AS value_source,
                    toString(c.institutional_value_period) AS value_period,
                    size(filers) AS coalition_filers
             // Cypher has no NULLS LAST clause, and DESC sorts nulls FIRST (verified on 2026.05)
             // — which would put every unknown-size issuer at the top. Sort on an explicit
-            // has-value flag so nulls land last: no 13F coverage means "unknown size", not
+            // has-value flag so nulls land last: no size figure means "unknown size", not
             // "smallest", and it must not outrank a named $114B target.
             ORDER BY value_usd IS NOT NULL DESC, value_usd DESC, name
             LIMIT $limit
@@ -724,15 +732,25 @@ class OwnershipIntelligenceEngine:
         is corroborated by recent activity even when the stake was declared a decade ago —
         Liberty Broadband's 26.1% of Charter was filed in 2014 and its director was seen in 2026.
 
-        ``min_value_usd`` filters on the 13F size proxy so results are recognizable rather than
-        nano-cap noise; issuers with no institutional coverage are excluded rather than ranked
-        last, because an unranked row cannot honestly claim materiality.
+        ``min_value_usd`` filters on ``size_usd`` — a real balance sheet where one is filed
+        (``total_assets_usd``), falling back to the 13F float proxy. This matters here more than
+        anywhere else in the graph: float is smallest exactly where ownership is concentrated, so
+        the float-only filter was hiding the issuers this query exists to find. EchoStar carries
+        $43B of assets and is 51.8% controlled, yet has **no 13F coverage at all**, so it could
+        never appear. Read ``size_source`` on each row to know which measure applied — a $43B
+        assets figure and a $43B float figure are different claims.
+
+        Issuers with **neither** figure are still excluded, because an unsized row cannot honestly
+        claim materiality. But the count is now reported as ``excluded_no_size`` rather than
+        vanishing: at the default threshold this filter used to discard more rows than it returned,
+        with nothing in the output saying so.
         """
         meta = {
             "strategy_path": "ownership_intelligence",
             "traversal": "cypher_two_limb_join",
             "min_tier": min_tier,
             "min_value_usd": min_value_usd,
+            "size_measure": "size_usd (total_assets_usd, else institutional_value_usd)",
             "legal_basis": "12 CFR 225.2(e) control presumptions (stake tier + board control)",
         }
         with self.driver.session(database=self.database) as session:
@@ -740,22 +758,39 @@ class OwnershipIntelligenceEngine:
                 """
                 MATCH (b:BeneficialOwner)-[r:INFLUENCES]->(c:Company)
                 WHERE r.board_seat AND r.tier >= $min_tier
-                  AND c.institutional_value_usd >= $min_value
+                  AND c.size_usd >= $min_value
                 RETURN c.cik AS company_cik, c.ticker AS ticker,
                        coalesce(c.name, c.cik) AS company,
+                       c.size_usd AS size_usd, c.size_source AS size_source,
+                       // Both inputs ride along, always. Side by side they are informative:
+                       // TMUS is $219B of assets against $92.6B of float, and ECHO has assets
+                       // with no float at all — each row documents why it qualified.
+                       c.total_assets_usd AS total_assets_usd,
                        c.institutional_value_usd AS institutional_value_usd,
                        b.cik AS owner_cik, coalesce(b.name, b.cik) AS owner,
                        r.percent_of_class AS percent_of_class, r.tier AS tier,
                        r.accession_number AS accession_number,
                        toString(r.filing_date) AS filing_date,
                        toString(r.board_seat_last_seen) AS board_seat_last_seen
-                ORDER BY institutional_value_usd DESC, percent_of_class DESC
+                ORDER BY size_usd DESC, percent_of_class DESC
                 LIMIT $limit
                 """,
                 min_tier=min_tier,
                 min_value=min_value_usd,
                 limit=limit,
             ).data()
+
+            # How many rows satisfied both structural limbs but had no size at all. Evidence-or-
+            # abstain applied to a filter: the answer states how many true facts it hid.
+            excluded = session.run(
+                """
+                MATCH (b:BeneficialOwner)-[r:INFLUENCES]->(c:Company)
+                WHERE r.board_seat AND r.tier >= $min_tier AND c.size_usd IS NULL
+                RETURN count(*) AS n
+                """,
+                min_tier=min_tier,
+            ).single()["n"]
+        meta["excluded_no_size"] = excluded
 
         if not rows:
             return OwnershipIntelligenceResult(
@@ -884,25 +919,33 @@ class OwnershipIntelligenceEngine:
                 f"Stake + board seat — {r.result['case_count']} issuers "
                 f"({r.anchor}). Two independent filing types agreeing:",
                 "",
-                f"  {'TICKER':8} {'SIZE':>9}  {'STAKE':>6}  {'13D':6} {'SEAT':8} HOLDER",
+                f"  {'TICKER':8} {'SIZE':>9} {'SRC':4} {'STAKE':>6}  {'13D':6} {'SEAT':8} HOLDER",
             ]
             for c in r.result["cases"]:
-                size = (
-                    f"${c['institutional_value_usd'] / 1e9:.1f}B"
-                    if c.get("institutional_value_usd")
-                    else "—"
+                size = f"${c['size_usd'] / 1e9:.1f}B" if c.get("size_usd") else "—"
+                # Which measure produced the figure, rendered inline. Without it a balance-sheet
+                # total and a free-float total are indistinguishable in the output.
+                src = {"dera_assets": "asst", "institutional_13f": "13F"}.get(
+                    c.get("size_source") or "", "—"
                 )
                 yr = (c.get("filing_date") or "")[:4]
                 seat = (c.get("board_seat_last_seen") or "")[:7]
                 lines.append(
-                    f"  {c.get('ticker') or c['company_cik']:8} {size:>9}  "
+                    f"  {c.get('ticker') or c['company_cik']:8} {size:>9} {src:4} "
                     f"{c['percent_of_class']:5.1f}%  {yr:6} {seat:8} {c['owner']}"
                 )
             lines += [
                 "",
+                "SIZE is total assets (asst) where a 10-K/10-Q reports one, else 13F float (13F).",
                 "Each row cites a Schedule 13D accession AND a Form 3/4/5 board date;"
                 " see Evidence.",
             ]
+            excluded = (r.metadata or {}).get("excluded_no_size")
+            if excluded:
+                lines.append(
+                    f"{excluded} further issuer(s) meet both limbs but have no size figure at "
+                    f"all, and are excluded rather than ranked."
+                )
             return "\n".join(lines)
 
         if r.task_type == "control_chain":

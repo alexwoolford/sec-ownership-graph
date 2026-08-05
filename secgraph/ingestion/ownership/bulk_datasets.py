@@ -49,6 +49,11 @@ FORM_13F_LANDING = "https://www.sec.gov/dera/data/form-13f"
 # Fails-to-deliver: the keyed CUSIP↔SYMBOL bridge (see cusip_crosswalk). SEC has
 # shuffled this between /files/data/ and /files/data/other/, so scrape, never hardcode.
 FTD_LANDING = "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data"
+# Financial Statement Data Sets: XBRL facts from 10-K/10-Q, keyed on CIK in sub.txt. The source
+# of Company.total_assets_usd — a real balance-sheet figure, where institutional_value_usd is
+# only free float and therefore understates concentrated-ownership issuers by construction.
+# Zip names are plain quarters ("2025q1.zip"), so _QUARTER_RE matches without a new pattern.
+FSDS_LANDING = "https://www.sec.gov/dera/data/financial-statement-data-sets"
 
 _SEC_BASE = "https://www.sec.gov"
 # Three naming schemes seen in the wild:
@@ -252,14 +257,20 @@ def staged_zip_paths(
     return ordered[:limit] if limit is not None else ordered
 
 
-def iter_tsv_rows(zip_path: Path, table: str) -> Iterator[dict[str, str]]:
-    """Yield each row of a TSV table inside a bulk zip as a dict.
+def iter_tsv_rows(zip_path: Path, table: str, extension: str = "tsv") -> Iterator[dict[str, str]]:
+    """Yield each row of a tab-separated table inside a bulk zip as a dict.
 
-    ``table`` is the base name without extension (e.g. ``"SUBMISSION"``);
-    ``.tsv`` is appended. Splits on tab; tolerates ragged rows by zipping
-    against the header (missing trailing fields become "").
+    ``table`` is the base name without extension (e.g. ``"SUBMISSION"``); ``extension`` is
+    appended. Splits on tab; tolerates ragged rows by zipping against the header (missing
+    trailing fields become "").
+
+    ``extension`` exists because the Financial Statement Data Sets ship ``num.txt``/``sub.txt``
+    while Form 345/13F ship ``.tsv`` — same tab-separated format, different suffix. Kept as one
+    iterator rather than two: this one already streams row-by-row from inside the archive, which
+    is mandatory rather than merely tidy for FSDS (``num.txt`` is ~530 MB uncompressed and would
+    not fit comfortably in memory).
     """
-    filename = f"{table}.tsv"
+    filename = f"{table}.{extension.lstrip('.')}"
     with zipfile.ZipFile(zip_path) as archive:
         names = archive.namelist()
         # SEC 13F zips ship two layouts: tables at the archive root
@@ -317,7 +328,10 @@ _MONTHS = {
 
 
 def parse_sec_date(value: str | None) -> str | None:
-    """Convert a bulk-dataset ``DD-MON-YYYY`` date to ISO ``YYYY-MM-DD``.
+    """Convert a bulk-dataset date to ISO ``YYYY-MM-DD``.
+
+    Handles the two formats SEC bulk data actually ships: ``DD-MON-YYYY`` (Form 345, 13F) and
+    the compact ``YYYYMMDD`` used by the Financial Statement Data Sets ``ddate`` column.
 
     Returns None for empty/malformed values so the caller can omit the property
     (Neo4j has no null) and so ``date()`` is never called on garbage.
@@ -325,12 +339,27 @@ def parse_sec_date(value: str | None) -> str | None:
     Examples:
         >>> parse_sec_date("31-MAR-2025")
         '2025-03-31'
+        >>> parse_sec_date("20241231")
+        '2024-12-31'
         >>> parse_sec_date("") is None
         True
     """
     if not value:
         return None
-    parts = value.strip().split("-")
+    text = value.strip()
+
+    # FSDS: 8 compact digits. Validated via date.fromisoformat rather than sliced blindly —
+    # "20241345" is 8 digits and would otherwise become the string "2024-13-45", which only
+    # fails later inside Cypher's date(), far from the bad row.
+    if len(text) == 8 and text.isdigit():
+        candidate = f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
+        try:
+            date.fromisoformat(candidate)
+        except ValueError:
+            return None
+        return candidate
+
+    parts = text.split("-")
     if len(parts) != 3:
         return None
     day, mon, year = parts

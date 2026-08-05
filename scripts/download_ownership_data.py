@@ -30,19 +30,25 @@ from secgraph.cli import setup_logging
 from secgraph.ingestion.ownership.bulk_datasets import (
     FORM_13F_LANDING,
     FORM_345_LANDING,
+    FSDS_LANDING,
     FTD_LANDING,
     download_dataset,
 )
 
-_LANDINGS = {"345": FORM_345_LANDING, "13f": FORM_13F_LANDING, "ftd": FTD_LANDING}
-_SUBDIRS = {"345": "form345", "13f": "form13f", "ftd": "ftd"}
+_LANDINGS = {
+    "345": FORM_345_LANDING,
+    "13f": FORM_13F_LANDING,
+    "ftd": FTD_LANDING,
+    "fsds": FSDS_LANDING,
+}
+_SUBDIRS = {"345": "form345", "13f": "form13f", "ftd": "ftd", "fsds": "fsds"}
 
 
 def main():
     parser = argparse.ArgumentParser(description="Download SEC bulk ownership datasets")
     parser.add_argument(
         "--form",
-        choices=["345", "13f", "ftd", "13dg"],
+        choices=["345", "13f", "ftd", "fsds", "13dg"],
         required=True,
         help="Dataset family to stage",
     )

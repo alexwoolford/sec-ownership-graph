@@ -64,7 +64,7 @@ def render_markdown(scan, timelines: list, generated: str) -> str:
         lines.append(
             f"## {c['ticker'] or c['cik']} — {c['name']}"
             f" · {h['franchise_count']} franchises within {h['span_days']} days"
-            f"{format_institutional_value(c.get('institutional_value_usd'))}"
+            f"{format_institutional_value(c.get('size_usd'), c.get('size_source'))}"
         )
         lines.append("")
         lines.append("| Date | Filer | % of class | Accession |")
@@ -98,8 +98,10 @@ def render_markdown(scan, timelines: list, generated: str) -> str:
         "",
         "- **No prediction.** This is a structural/temporal screen, not a signal; the alpha",
         "  question was tested separately and came back null.",
-        "- **No materiality ranking.** The graph carries no market-cap or size data, so a",
-        "  nano-cap and a large cap appear side by side.",
+        "- **Size is a threshold, not a market cap.** Results are ranked by `size_usd` — filed",
+        "  total assets where a 10-K/10-Q reports one, else the 13F free-float proxy. Neither is",
+        "  market cap, assets are not comparable across sectors, and ~17% of issuers have",
+        "  neither figure.",
         "- **Recall is deliberately limited.** Only recognised activist franchises are matched,",
         "  so an unlisted or first-time activist will be missed.",
         "- **13D/13G dates only.** Board and 13F layers are snapshots, not time series.",

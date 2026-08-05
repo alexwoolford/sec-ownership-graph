@@ -31,7 +31,7 @@ from secgraph.cli import (
     setup_logging,
     verify_neo4j_connection,
 )
-from secgraph.ingestion.ownership.materiality import materialize_materiality
+from secgraph.ingestion.ownership.materiality import materialize_materiality, materialize_size
 
 
 def main() -> int:
@@ -58,6 +58,15 @@ def main() -> int:
             driver,
             database=database,
             replace=args.replace,
+            execute=args.execute,
+            logger_instance=logger,
+        )
+        # Always follow with the combined measure: size_usd is a function of both inputs, so
+        # recomputing the 13F side without refreshing it would leave the two out of step and
+        # every size-filtered query reading a stale figure.
+        materialize_size(
+            driver,
+            database=database,
             execute=args.execute,
             logger_instance=logger,
         )
