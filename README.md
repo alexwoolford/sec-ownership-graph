@@ -12,33 +12,36 @@ that does and doesn't support, is in [Honest limits](#honest-limits).
 
 ## The demo in one question
 
-> *"Which companies have had multiple activists show up recently — and who moved first?"*
+> *"Who can actually move this company — and can you prove it from two independent filings?"*
 
 ```
 $ make demo
 
-Activist convergence — 5 issuers:
+Stake + board seat — issuers where a holder clears a Fed control-presumption tier
+AND currently sits on the board. Two independent filing types agreeing:
 
-  MNRO — MONRO, INC. (2 franchises within 96 days)
-     2025-08-01  GAMCO INVESTORS, INC. ET AL 5.01%
-     2025-11-05  ICAHN CARL C 14.79%
-  ...
-
-Ownership timeline — MONRO, INC.:
-  2025-01-23  13G           DIMENSIONAL FUND ADVISORS LP (passive_index)
-  2025-04-29  13G           BlackRock, Inc. (passive_index)
-  2025-05-15  13G           NOMURA HOLDINGS INC (custodian)
-  2025-08-01  13D    5.01%  GAMCO INVESTORS, INC. ET AL (activist)
-  2025-11-05  13D   14.79%  ICAHN CARL C (activist)
-
-First mover: GAMCO INVESTORS, INC. ET AL on 2025-08-01 at 5.01%
-  → ICAHN CARL C followed 96 days later at 14.79%
+  TICKER        SIZE   STAKE  13D    SEAT     HOLDER
+  BRK-B      $479.9B   37.0%  2024   2026-05  BUFFETT WARREN E
+  TMUS        $92.6B   74.3%  2013   2025-10  DEUTSCHE TELEKOM AG
+  CHTR        $22.4B   26.1%  2014   2026-06  Liberty Broadband Corp
+  RDDT        $20.5B   61.5%  2024   2026-06  Huffman Steve Ladd
 ```
 
-Note what the graph does that a filings search cannot: it separates the two *activists* from the
-index money and the custodian **inside the same filing type**, and it puts them in order.
+The stake comes from a Schedule 13D; the board seat comes from Form 3/4/5. A screener sells you
+either list — the *pairing* is the finding, and it is the join a single-table query cannot do for
+you. Note the two date columns: Liberty Broadband declared 26.1% of Charter in **2014**, and its
+director was on file in **2026**. A 13D has no exit obligation below 5%, so an old stake proves
+nothing alone; the current seat is what corroborates it.
 
-**→ Full walkthrough: [`docs/demo_script_activist_desk.md`](docs/demo_script_activist_desk.md)**
+And when there is nothing to say, it says so — ten of ten mega-caps abstain on control:
+
+```
+$ control_chain("AAPL")
+No graph-grounded answer for 'Apple Inc.' (no_verified_control_chain).
+Issuer has no >=50% verified 13D control edge on a chain.
+```
+
+**→ Full walkthrough: [`docs/demo_script_governance_desk.md`](docs/demo_script_governance_desk.md)**
 (five questions, ~10 minutes, including what this *cannot* tell you.)
 
 ---

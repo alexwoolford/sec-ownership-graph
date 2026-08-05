@@ -10,7 +10,7 @@ thin `scripts/` wrappers. Target database: `secgraph`.
 
 The point of the project is the handful of questions that need a relationship followed to a
 data-determined depth: activist campaign timing, activist coalitions, transitive control chains,
-board interlocks. See `docs/demo_script_activist_desk.md` for what it's *for*, and
+board interlocks. See `docs/demo_script_governance_desk.md` for what it's *for*, and
 `docs/reference_architecture_secgraph.md` for how it's assembled.
 
 ## Environment & common commands
@@ -280,17 +280,22 @@ The test suite passed regardless because pytest inserts the rootdir. If you see
 
 ## Changing a published figure
 
-Several numbers appear in `README.md`, `docs/`, and `results/*.md` (e.g. the 16-member coalition,
-11 control chains, MNRO's 96-day gap). If a fix changes one, **update every occurrence and state
+Several numbers appear in `README.md`, `docs/`, and `results/*.md` (e.g. the 25-CIK coalition,
+22 control chains, MNRO's 96-day gap, and the institutional size figures). If a fix changes one, **update every occurrence and state
 the reason**. Silently moving a headline number is the fastest way to lose a technical audience;
 the precision fix that took the coalition from 22 to 16 is documented for exactly that reason.
 
 Grep before editing — the current call sites are:
 
-- **16-member coalition** — `docs/reference_architecture_secgraph.md` (×2, incl. the 22→16 note),
-  `docs/demo_script_activist_desk.md`, `results/graph_native_proof.md`
-- **11 control chains** — `docs/reference_architecture_secgraph.md`
-- **96 days (MNRO)** — `README.md` (×2), both `docs/*.md`, `results/activist_convergence.md` (×2)
+- **Coalition size (25 CIKs / 21 distinct actors)** — `docs/reference_architecture_secgraph.md`
+  (×2, incl. the movement note), `docs/demo_script_governance_desk.md`,
+  `results/graph_native_proof.md`
+- **22 control chains** — `docs/reference_architecture_secgraph.md`
+- **96 days (MNRO)** — `README.md`, both `docs/*.md`, `results/activist_convergence.md` (×2)
+- **Institutional size figures** (TMUS $92.6B, BRK-B $479.9B, "20 of 825 ≥$10B / 97 ≥$1B") —
+  `README.md`, both `docs/*.md`, `secgraph/ingestion/ownership/materiality.py`,
+  `influence_edges.py`, `mcp/ownership_server.py`. **These move whenever 13F is reloaded**, since
+  they are one quarter's holdings — re-derive from the graph rather than trusting a doc.
 
 `results/activist_convergence.md` and `results/graph_native_proof.md` are regenerable
 (`make demo` / `make prove` with `--markdown`), so prefer regenerating over hand-editing.

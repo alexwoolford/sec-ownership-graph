@@ -115,7 +115,7 @@ Drop into Claude Desktop / this project via [`.mcp.json`](../.mcp.json).
 ## Tool catalog (what a finance pro asks)
 
 Ordered by demo value — the timing and coalition questions are what an event-driven desk asks;
-the rest is supporting context. See [`docs/demo_script_activist_desk.md`](demo_script_activist_desk.md)
+the rest is supporting context. See [`docs/demo_script_governance_desk.md`](demo_script_governance_desk.md)
 for the scripted walkthrough.
 
 | Tool | Ask it | Returns |
@@ -291,7 +291,7 @@ python scripts/serve_ownership_mcp.py --database secgraph
 python scripts/build_secgraph.py --database secgraph
 ```
 
-See also [`docs/demo_script_activist_desk.md`](demo_script_activist_desk.md) for the scripted
+See also [`docs/demo_script_governance_desk.md`](demo_script_governance_desk.md) for the scripted
 five-question walkthrough, and the schema contract in
 [`schema/graph_schema.yaml`](../schema/graph_schema.yaml) (`BENEFICIAL_OWNER_OF`,
 `SHARES_DIRECTOR`).

@@ -10,7 +10,7 @@ CIK, and answers the questions that need relationships followed to an unknown de
 - **Board interlocks** — the named director bridging two boards.
 
 Everything served is deterministic Cypher with an evidence-or-abstain contract: each answer cites
-its SEC accession number, or explicitly declines. See ``docs/demo_script_activist_desk.md``.
+its SEC accession number, or explicitly declines. See ``docs/demo_script_governance_desk.md``.
 """
 
 import logging

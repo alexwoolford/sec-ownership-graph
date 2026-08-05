@@ -17,7 +17,7 @@ help:
 	@echo "  make check          Lint + tests"
 	@echo "  make preflight      Check build preconditions in seconds (writes nothing)"
 	@echo ""
-	@echo "  make demo           Activist convergence screen + the MNRO timeline"
+	@echo "  make demo           Influence map (stake + board seat) + activist timing"
 	@echo "  make prove          Graph-vs-SQL head-to-head for all three wins"
 	@echo "  make smoke-mcp      Curated MCP catalog + demo queries (live DB, read-only)"
 	@echo "  make serve          Serve the curated MCP tools over stdio"
@@ -53,7 +53,10 @@ preflight:
 	$(PYTHON) scripts/build_secgraph.py --database $(DB) --preflight-only
 
 # --- Demo surfaces (read-only) ---------------------------------------------- #
+# Leads with the influence map — a stake at the regulator's own threshold cross-checked against a
+# board seat from a different filing type — then the activist timing screen.
 demo:
+	$(PYTHON) scripts/influence_map.py --database $(DB)
 	$(PYTHON) scripts/activist_convergence.py --database $(DB) --since 2023-01-01 --timeline MNRO
 
 prove:
