@@ -220,9 +220,12 @@ saturates with depth rather than scaling linearly, because `insiders.py` MERGEs 
 (insider, company) pair. The default is `_QUARTERS_345 = 12` for this reason; it was 4, which
 NO-GOs a cold start.
 
-The gate's path sampling uses **unseeded `ORDER BY rand()`** (`density.py:125`), so a marginal
-graph can PASS one run and FAIL the next. Not yet fixed — treat a borderline result as
-inconclusive and stage more quarters.
+The gate's path sampling **is now deterministic** — `density.py:135` orders by `c.cik`, not the
+unseeded `ORDER BY rand()` it once used (which let a marginal graph PASS one run and FAIL the next).
+A borderline result is still worth treating as thin margin rather than a clean pass: stage more
+quarters. The same rule-11 concern applies to GDS, which is why `interlock_features.py` pins
+`concurrency=1` — the parallel default reassigned 52.4% of Louvain communities between identical
+runs.
 
 ## Gotchas that have cost real time
 

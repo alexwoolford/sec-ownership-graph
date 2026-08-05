@@ -121,6 +121,86 @@ _SIZE_BREAKDOWN_QUERY = """
     ORDER BY n DESC
 """
 
+# 13F degree counts. Not a materiality measure — a SAFETY rail for any interactive client.
+#
+# HOLDS is 6.7M edges with out-degree p50 220 and a worst case of 45,694 on a single
+# InstitutionalManager. Expanding that one node in a graph explorer hangs the browser, and the
+# client cannot know the cost before it pays it. Precomputing the degree lets a scene, a saved
+# query, or an MCP tool threshold BEFORE traversing, rather than discovering the fan-out live.
+#
+# Written here rather than in a new module because they are aggregates over the same HOLDS layer
+# materialize_materiality already sums, so they cannot drift out of step with it.
+_DEGREE_QUERY = """
+    MATCH (m:InstitutionalManager)-[h:HOLDS]->(c:Company)
+    WITH m, count(DISTINCT c) AS holds_count
+    SET m.holds_count = holds_count
+    RETURN count(m) AS n
+"""
+
+_HELD_BY_QUERY = """
+    MATCH (m:InstitutionalManager)-[h:HOLDS]->(c:Company)
+    WITH c, count(DISTINCT m) AS held_by_count
+    SET c.held_by_count = held_by_count
+    RETURN count(c) AS n
+"""
+
+_DEGREE_CLEAR_QUERY = """
+    MATCH (n) WHERE n.holds_count IS NOT NULL OR n.held_by_count IS NOT NULL
+    REMOVE n.holds_count, n.held_by_count
+    RETURN count(n) AS n
+"""
+
+_DEGREE_STATS_QUERY = """
+    MATCH (m:InstitutionalManager) WHERE m.holds_count IS NOT NULL
+    RETURN max(m.holds_count) AS worst,
+           percentileCont(m.holds_count, 0.5) AS p50,
+           count(*) AS managers
+"""
+
+
+def materialize_degrees(
+    driver,
+    database: str | None = None,
+    execute: bool = False,
+    logger_instance: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """Write ``holds_count`` / ``held_by_count`` so clients can threshold before traversing.
+
+    Idempotent (plain SET over a full aggregation). Cleared first so a manager that stops filing
+    does not keep a stale count — a stale fan-out estimate is worse than none, since the whole
+    point is to trust it before paying for a traversal.
+    """
+    log = logger_instance or logger
+
+    with driver.session(database=database) as session:
+        edges = session.run("MATCH ()-[h:HOLDS]->() RETURN count(h) AS n").single()["n"]
+    if edges == 0:
+        log.warning("no HOLDS edges — skipping degree counts (load 13F first)")
+        return {"skipped": True, "holds_edges": 0}
+
+    if not execute:
+        log.info(f"DRY RUN — would set holds_count/held_by_count from {edges:,} HOLDS edges")
+        return {"holds_edges": edges, "dry_run": True}
+
+    with driver.session(database=database) as session:
+        cleared = session.run(_DEGREE_CLEAR_QUERY).single()["n"]
+        managers = session.run(_DEGREE_QUERY).single()["n"]
+        companies = session.run(_HELD_BY_QUERY).single()["n"]
+        stats = session.run(_DEGREE_STATS_QUERY).single()
+
+    log.info(
+        f"✓ holds_count on {managers:,} managers · held_by_count on {companies:,} companies "
+        f"(p50 {stats['p50']:.0f}, worst {stats['worst']:,} — threshold on this before expanding)"
+    )
+    return {
+        "holds_edges": edges,
+        "cleared": cleared,
+        "managers": managers,
+        "companies": companies,
+        "worst_out_degree": stats["worst"],
+        "p50_out_degree": stats["p50"],
+    }
+
 
 def materialize_size(
     driver,

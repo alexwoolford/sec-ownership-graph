@@ -245,3 +245,48 @@ class TestFsdsWiring:
         monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", tmp_path / "absent.csv")
         prov = p.collect_provenance(as_of=None, quarters_345=16, quarters_13f=4)
         assert "fsds" in prov["staged_periods"]
+
+
+class TestInterlockFeaturesWiring:
+    def test_features_follow_the_interlock_edge_they_depend_on(self, monkeypatch, tmp_path):
+        """A real data dependency: the GDS projection reads DIRECTOR_OF and the materializer's
+        degree pass reads SHARES_DIRECTOR, so both must exist first."""
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        scripts = [s.script for s in p._steps("secgraph", refresh=False)]
+        assert "materialize_interlock_features.py" in scripts
+        assert scripts.index("load_insiders.py") < scripts.index(
+            "materialize_interlock_features.py"
+        )
+        assert scripts.index("materialize_interlock_edges.py") < scripts.index(
+            "materialize_interlock_features.py"
+        )
+
+    def test_features_run_after_the_density_gate(self, monkeypatch, tmp_path):
+        """A preference, not a dependency — and the reason is worth locking in. Keeping a
+        GDS-plugin-dependent step after the fail-closed gate means a GDS problem cannot abort an
+        expensive build before the gate has had a chance to run."""
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        steps = p._steps("secgraph", refresh=False)
+        scripts = [s.script for s in steps]
+        gate = next(i for i, s in enumerate(steps) if s.gate)
+        assert gate < scripts.index("materialize_interlock_features.py")
+
+    def test_refresh_replaces_stale_features(self, monkeypatch, tmp_path):
+        """A company that drops out of the scrubbed projection must LOSE its score: absence means
+        'not in the interlock graph', which is a different claim from 'central with score 0'."""
+        csv_path = tmp_path / "control_figures.csv"
+        csv_path.write_text("accession_number\n")
+        monkeypatch.setattr(p, "_CONTROL_FIGURES_CSV", csv_path)
+
+        refresh = next(
+            s
+            for s in p._steps("secgraph", refresh=True)
+            if s.script == "materialize_interlock_features.py"
+        )
+        assert "--replace" in refresh.extra_args

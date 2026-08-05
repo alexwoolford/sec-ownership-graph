@@ -4,12 +4,20 @@ Graph Schema Contract - Single Source of Truth.
 This module defines the canonical schema for the Public Company Graph.
 All definitions are loaded from schema/graph_schema.yaml at import time.
 
-Coverage levels indicate data density:
-- DENSE (>80%): Safe to use in queries, most nodes have this relationship
-- MODERATE (40-80%): Use OPTIONAL MATCH, many nodes have this relationship
-- SPARSE (<40%): Warn users, few nodes have this relationship
+**This module describes STRUCTURE, not density.** It knows which labels, relationship types and
+properties are declared, and (from whether a property is required or optional) whether each is
+nullable. It deliberately does **not** know coverage — that requires the database, and the previous
+attempt to carry it as hand-maintained statistics drifted into reporting the 6.7M-edge ``HOLDS``
+relationship as ``count=0, SPARSE``. See the "COVERAGE STATISTICS — REMOVED" block below.
 
-Coverage statistics are maintained separately and may lag behind schema changes.
+To measure anything about the live graph — coverage, counts, or whether the declared schema is
+actually the schema the database has — run::
+
+    python scripts/validate_graph_schema.py --database secgraph
+
+Coverage levels are retained on the dataclasses for callers that compute them from a live
+connection: DENSE (>80%), MODERATE (40-80%), SPARSE (<40%), UNKNOWN (not measured — the default
+here).
 """
 
 from dataclasses import dataclass, field
@@ -26,6 +34,11 @@ class Coverage(Enum):
     DENSE = "DENSE"  # >80% coverage
     MODERATE = "MODERATE"  # 40-80% coverage
     SPARSE = "SPARSE"  # <40% coverage
+    # Not measured. A STATIC contract parsed from YAML cannot know coverage — that requires the
+    # database. This value exists because the alternative was defaulting to SPARSE, which is a
+    # claim, and a false one: it made is_relationship_sparse('HOLDS') return True for 6.7M edges.
+    # Measure with scripts/validate_graph_schema.py.
+    UNKNOWN = "UNKNOWN"
 
 
 @dataclass
@@ -95,195 +108,30 @@ def _load_yaml_schema() -> dict:
 
 
 # ==============================================================================
-# COVERAGE STATISTICS (supplemental - may lag behind schema)
+# COVERAGE STATISTICS — REMOVED DELIBERATELY. DO NOT REINTRODUCE.
 # ==============================================================================
-# These are approximate counts/percentages from the live graph.
-# They are NOT authoritative - the YAML schema is the source of truth for structure.
-
-_NODE_COUNTS: dict[str, int] = {
-    "Company": 5_410,
-    "Domain": 4_337,
-    "Technology": 827,
-    "Document": 5_410,
-    "Chunk": 2_850_489,
-    "CommunitySummary": 11,
-}
-
-_RELATIONSHIP_STATS: dict[str, dict[str, Any]] = {
-    "HAS": {"coverage": Coverage.DENSE, "coverage_pct": 1.0, "count": 5_410},
-    "PART_OF_DOCUMENT": {"coverage": Coverage.DENSE, "coverage_pct": 1.0, "count": 2_850_489},
-    "NEXT_CHUNK": {"coverage": Coverage.DENSE, "coverage_pct": 0.998, "count": 2_845_079},
-    "HAS_DOMAIN": {"coverage": Coverage.MODERATE, "coverage_pct": 0.692, "count": 3_745},
-    "USES": {"coverage": Coverage.DENSE, "coverage_pct": 0.85, "count": 46_081},
-    "LIKELY_TO_ADOPT": {"coverage": Coverage.MODERATE, "coverage_pct": 0.70, "count": 41_250},
-    "CO_OCCURS_WITH": {"coverage": Coverage.MODERATE, "coverage_pct": 0.60, "count": 41_220},
-    "HAS_COMPETITOR": {"coverage": Coverage.MODERATE, "coverage_pct": 0.607, "count": 3_282},
-    "HAS_PARTNER": {"coverage": Coverage.SPARSE, "coverage_pct": 0.135, "count": 733},
-    "HAS_CUSTOMER": {"coverage": Coverage.SPARSE, "coverage_pct": 0.062, "count": 337},
-    "HAS_SUPPLIER": {"coverage": Coverage.SPARSE, "coverage_pct": 0.033, "count": 176},
-    "CANDIDATE_COMPETITOR": {"coverage": Coverage.SPARSE, "coverage_pct": 0.025, "count": 134},
-    "CANDIDATE_PARTNER": {"coverage": Coverage.SPARSE, "coverage_pct": 0.166, "count": 899},
-    "CANDIDATE_CUSTOMER": {"coverage": Coverage.SPARSE, "coverage_pct": 0.021, "count": 114},
-    "CANDIDATE_SUPPLIER": {"coverage": Coverage.SPARSE, "coverage_pct": 0.028, "count": 150},
-    "SIMILAR_DESCRIPTION": {"coverage": Coverage.DENSE, "coverage_pct": 0.95, "count": 438_039},
-    "SIMILAR_SIZE": {"coverage": Coverage.MODERATE, "coverage_pct": 0.18, "count": 419_282},
-    "SIMILAR_INDUSTRY": {"coverage": Coverage.DENSE, "coverage_pct": 0.95, "count": 519_000},
-    "SIMILAR_RISK": {"coverage": Coverage.DENSE, "coverage_pct": 0.95, "count": 395_152},
-    "SIMILAR_TECHNOLOGY": {"coverage": Coverage.MODERATE, "coverage_pct": 0.69, "count": 124_584},
-    "SIMILAR_KEYWORD": {"coverage": Coverage.SPARSE, "coverage_pct": 0.0001, "count": 71},
-    "TNIC_COMPETITOR": {"coverage": Coverage.SPARSE, "coverage_pct": 0.25, "count": 22_000},
-    "IN_COMMUNITY": {"coverage": Coverage.DENSE, "coverage_pct": 1.0, "count": 5_410},
-}
-
-_PROPERTY_STATS: dict[str, dict[str, dict[str, Any]]] = {
-    "Company": {
-        "cik": {"coverage_pct": 1.0, "coverage": Coverage.DENSE, "nullable": False, "default": ""},
-        "name": {"coverage_pct": 1.0, "coverage": Coverage.DENSE, "nullable": False, "default": ""},
-        "loaded_at": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": False,
-            "default": None,
-        },
-        "ticker": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": "",
-        },
-        "description": {
-            "coverage_pct": 0.9985,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": "",
-        },
-        "description_embedding": {
-            "coverage_pct": 0.9985,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": None,
-        },
-        "risk_factors": {
-            "coverage_pct": 0.99,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": "",
-        },
-        "risk_factors_embedding": {
-            "coverage_pct": 0.99,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": None,
-        },
-        "industry": {
-            "coverage_pct": 0.18,
-            "coverage": Coverage.SPARSE,
-            "nullable": True,
-            "default": "",
-        },
-        "sector": {
-            "coverage_pct": 0.18,
-            "coverage": Coverage.SPARSE,
-            "nullable": True,
-            "default": "",
-        },
-        "market_cap": {
-            "coverage_pct": 0.18,
-            "coverage": Coverage.SPARSE,
-            "nullable": True,
-            "default": 0,
-        },
-        "revenue": {
-            "coverage_pct": 0.15,
-            "coverage": Coverage.SPARSE,
-            "nullable": True,
-            "default": 0,
-        },
-        "employees": {
-            "coverage_pct": 0.15,
-            "coverage": Coverage.SPARSE,
-            "nullable": True,
-            "default": 0,
-        },
-        "sic_code": {
-            "coverage_pct": 0.50,
-            "coverage": Coverage.MODERATE,
-            "nullable": True,
-            "default": "",
-        },
-        "community_id": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": None,
-        },
-        "centrality_score": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": 0.0,
-        },
-        "risk_categories": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": [],
-        },
-        "primary_risks": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": [],
-        },
-    },
-    "Domain": {
-        "final_domain": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": False,
-            "default": "",
-        },
-        "title": {
-            "coverage_pct": 0.90,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": "",
-        },
-        "description": {
-            "coverage_pct": 0.85,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": "",
-        },
-        "http_status": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": True,
-            "default": 0,
-        },
-    },
-    "Chunk": {
-        "chunk_id": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": False,
-            "default": "",
-        },
-        "text": {"coverage_pct": 1.0, "coverage": Coverage.DENSE, "nullable": False, "default": ""},
-        "embedding": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": False,
-            "default": None,
-        },
-        "chunk_index": {
-            "coverage_pct": 1.0,
-            "coverage": Coverage.DENSE,
-            "nullable": False,
-            "default": 0,
-        },
-    },
-}
+# This module used to carry hand-maintained _NODE_COUNTS, _RELATIONSHIP_STATS and
+# _PROPERTY_STATS dicts. They drifted into describing a different graph, and because this file is
+# named "Single Source of Truth" that drift read as authoritative:
+#
+#   * _RELATIONSHIP_STATS held 23 entries and not ONE current relationship type (all from a prior
+#     tech-graph project: HAS, USES, TNIC_COMPETITOR...). Every lookup missed and fell back to
+#     SPARSE, so is_relationship_sparse('HOLDS') returned True for a 6.7M-edge relationship and
+#     the warning read "Only 0 relationships exist in graph" for the densest layer in the graph.
+#   * _NODE_COUNTS said Company: 5_410 (actual 8,000) and listed five labels that no longer exist.
+#   * _PROPERTY_STATS asserted market_cap at 18% and revenue at 15% coverage while the schema's own
+#     Company description says the graph has neither. It had no entries at all for Insider,
+#     InstitutionalManager or BeneficialOwner, and none for the newest Company properties, so
+#     get_property_default('Company','size_usd') silently returned an invented figure.
+#
+# The fix is not to re-enter the numbers by hand — that is how it got this bad. Coverage cannot be
+# known by a static contract parsed from YAML; it requires the database. So it is MEASURED:
+#
+#     python scripts/validate_graph_schema.py --database secgraph
+#
+# which walks every declared label, relationship type, property, constraint, index and provenance
+# claim against the live graph, fails hard on missing structure, and reports coverage as a fact
+# rather than asserting it as a guess.
 
 
 # ==============================================================================
@@ -292,30 +140,43 @@ _PROPERTY_STATS: dict[str, dict[str, dict[str, Any]]] = {
 
 
 def _build_nodes(schema: dict) -> dict[str, NodeInfo]:
-    """Build NODES dict from YAML schema."""
+    """Build NODES from the YAML schema.
+
+    ``count`` is 0 because a *static* contract cannot know it. The previous version read a
+    hand-maintained ``_NODE_COUNTS`` dict, which claimed ``Company: 5_410`` against an actual 8,000
+    and listed five labels that no longer exist. Reporting 0 and pointing at the live validator is
+    honest; reporting a stale number that looks authoritative is not.
+    """
     nodes: dict[str, NodeInfo] = {}
     for label, node_def in schema.get("nodes", {}).items():
         nodes[label] = NodeInfo(
             label=label,
             description=node_def.get("description", ""),
-            count=_NODE_COUNTS.get(label, 0),
+            count=0,  # see docstring — measure with scripts/validate_graph_schema.py
             unique_key=node_def.get("unique_key", ""),
         )
     return nodes
 
 
 def _build_relationships(schema: dict) -> dict[str, RelationshipInfo]:
-    """Build RELATIONSHIPS dict from YAML schema."""
+    """Build RELATIONSHIPS from the YAML schema.
+
+    Coverage is ``UNKNOWN``, not ``SPARSE``. The old ``_RELATIONSHIP_STATS`` dict held 23 entries
+    from a prior project and not one current relationship type, so every lookup missed and defaulted
+    to ``SPARSE`` — which made ``is_relationship_sparse('HOLDS')`` return True for a **6.7M-edge**
+    relationship, and would have emitted "Only 0 relationships exist in graph" for the densest layer
+    in the graph. A wrong answer stated confidently is worse than no answer, so the class of
+    lookup is gone and ``scripts/validate_graph_schema.py`` measures it instead.
+    """
     relationships: dict[str, RelationshipInfo] = {}
     for name, rel_def in schema.get("relationships", {}).items():
-        stats = _RELATIONSHIP_STATS.get(name, {})
         relationships[name] = RelationshipInfo(
             name=name,
             pattern=rel_def.get("pattern", ""),
             description=rel_def.get("description", ""),
-            coverage=stats.get("coverage", Coverage.SPARSE),
-            coverage_pct=stats.get("coverage_pct", 0.0),
-            count=stats.get("count", 0),
+            coverage=Coverage.UNKNOWN,
+            coverage_pct=0.0,
+            count=0,
             required_properties=rel_def.get("required_properties", []),
             optional_properties=rel_def.get("optional_properties", []),
             source_label=rel_def.get("source", ""),
@@ -325,40 +186,32 @@ def _build_relationships(schema: dict) -> dict[str, RelationshipInfo]:
 
 
 def _build_properties(schema: dict) -> dict[str, dict[str, PropertyInfo]]:
-    """Build PROPERTIES dict from YAML schema."""
+    """Build PROPERTIES from the YAML schema.
+
+    ``nullable`` is derived structurally — required properties are non-nullable, optional ones are —
+    which is a fact the YAML actually encodes. ``coverage`` is ``UNKNOWN`` and ``default_value`` is
+    always None: both used to come from ``_PROPERTY_STATS``, which had no entries at all for three
+    of the four labels and none for any of the newest ``Company`` properties, so it silently
+    returned invented figures (0.5 coverage) for real data. It also still asserted ``market_cap`` at
+    18% and ``revenue`` at 15% while the schema's own ``Company`` description said the graph has
+    neither.
+    """
     properties: dict[str, dict[str, PropertyInfo]] = {}
     for label, node_def in schema.get("nodes", {}).items():
         properties[label] = {}
-        label_stats = _PROPERTY_STATS.get(label, {})
-
-        # Required properties
-        for prop_name, prop_def in node_def.get("required_properties", {}).items():
-            prop_stats = label_stats.get(prop_name, {})
-            properties[label][prop_name] = PropertyInfo(
-                name=prop_name,
-                node_label=label,
-                type=prop_def.get("type", "String"),
-                nullable=prop_stats.get("nullable", False),
-                coverage_pct=prop_stats.get("coverage_pct", 1.0),
-                coverage=prop_stats.get("coverage", Coverage.DENSE),
-                default_value=prop_stats.get("default", None),
-                description=prop_def.get("description", ""),
-            )
-
-        # Optional properties
-        for prop_name, prop_def in node_def.get("optional_properties", {}).items():
-            prop_stats = label_stats.get(prop_name, {})
-            properties[label][prop_name] = PropertyInfo(
-                name=prop_name,
-                node_label=label,
-                type=prop_def.get("type", "String"),
-                nullable=prop_stats.get("nullable", True),
-                coverage_pct=prop_stats.get("coverage_pct", 0.5),
-                coverage=prop_stats.get("coverage", Coverage.MODERATE),
-                default_value=prop_stats.get("default", None),
-                description=prop_def.get("description", ""),
-            )
-
+        for kind, nullable in (("required_properties", False), ("optional_properties", True)):
+            for prop_name, prop_def in (node_def.get(kind) or {}).items():
+                spec = prop_def if isinstance(prop_def, dict) else {}
+                properties[label][prop_name] = PropertyInfo(
+                    name=prop_name,
+                    node_label=label,
+                    type=spec.get("type", "String"),
+                    nullable=nullable,
+                    coverage_pct=0.0,
+                    coverage=Coverage.UNKNOWN,
+                    default_value=None,
+                    description=spec.get("description", ""),
+                )
     return properties
 
 

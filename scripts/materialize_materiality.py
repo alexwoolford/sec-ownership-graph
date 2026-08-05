@@ -31,7 +31,11 @@ from secgraph.cli import (
     setup_logging,
     verify_neo4j_connection,
 )
-from secgraph.ingestion.ownership.materiality import materialize_materiality, materialize_size
+from secgraph.ingestion.ownership.materiality import (
+    materialize_degrees,
+    materialize_materiality,
+    materialize_size,
+)
 
 
 def main() -> int:
@@ -65,6 +69,14 @@ def main() -> int:
         # recomputing the 13F side without refreshing it would leave the two out of step and
         # every size-filtered query reading a stale figure.
         materialize_size(
+            driver,
+            database=database,
+            execute=args.execute,
+            logger_instance=logger,
+        )
+        # Degree counts come from the same HOLDS layer, so they are refreshed together — a stale
+        # fan-out estimate defeats the purpose of having one.
+        materialize_degrees(
             driver,
             database=database,
             execute=args.execute,
