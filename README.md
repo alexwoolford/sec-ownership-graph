@@ -8,6 +8,10 @@ Data: Schedule 13D/13G (beneficial ownership), Form 3/4/5 (insiders and director
 (institutional holdings). Straight from EDGAR — no paid data vendor. Depth per layer, and what
 that does and doesn't support, is in [Honest limits](#honest-limits).
 
+**New to SEC filings?** [`docs/data_sources_and_forms.md`](docs/data_sources_and_forms.md) explains
+what each form is, what triggers it, and exactly which node or edge it became — including which
+four edges are *derived* rather than filed. Start there if the form names above aren't familiar.
+
 ---
 
 ## The demo in one question
@@ -141,11 +145,13 @@ materialize the derived edges (`SHARES_DIRECTOR`, `CONTROLS`, `SAME_ENTITY_AS`, 
 load 13D/13G and 13F. A successful run writes `results/secgraph_freshness.json`, which every
 served answer reports as its "as of" date.
 
-`schema/graph_schema.yaml` is the single source of truth — 4 node labels, 9 relationship types.
+`schema/graph_schema.yaml` is the single source of truth — 4 node labels, 10 relationship types.
 `tests/unit/test_schema_consistency.py` scans every `.py` file and fails the build if any Cypher
 references something undeclared.
 
 **Architecture detail: [`docs/reference_architecture_secgraph.md`](docs/reference_architecture_secgraph.md)**
+**What the forms mean and where each element came from: [`docs/data_sources_and_forms.md`](docs/data_sources_and_forms.md)**
+**Field-level schema (generated): [`docs/graph_schema.md`](docs/graph_schema.md)**
 
 ---
 

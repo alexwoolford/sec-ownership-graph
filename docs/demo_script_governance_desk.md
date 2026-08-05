@@ -8,6 +8,11 @@ word for it — governance and proxy teams, credit and counterparty risk, event-
 diligence process that has to survive an audit. Not a quant looking for a signal
 ([why not](#what-this-cannot-tell-you)).
 
+**If you're presenting this and the filings aren't second nature**, read
+[`data_sources_and_forms.md`](data_sources_and_forms.md) first — it covers what 13D vs 13G means
+(the distinction Q1 and Q4 turn on), why Form 4 data can't give you a board roster, and which
+edges are derived rather than filed. Every one of those comes up in questions.
+
 **Setup (clone → tools):**
 
 1. `uv venv && source .venv/bin/activate && uv pip install -e ".[dev,llm]"`
