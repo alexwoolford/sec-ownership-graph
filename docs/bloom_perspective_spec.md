@@ -9,7 +9,7 @@ with questions.*
 
 > **This has been built.** The resulting perspective is committed at
 > [`bloom/SEC Ownership Graph - governance desk.json`](../bloom/SEC%20Ownership%20Graph%20-%20governance%20desk.json)
-> — 4 categories, 10 relationship types, 6 saved searches, 7 Scene Actions. Import it via Bloom's
+> — 4 categories, 10 relationship types, 7 saved searches, 7 Scene Actions. Import it via Bloom's
 > perspective drawer (**Import perspective**) rather than rebuilding from this document.
 >
 > This spec is now two things: the brief that produced that file, and the reference explaining *why*
@@ -334,6 +334,30 @@ would pull thousands of nodes. Note also that `value_usd` is *share* holdings on
 `put_notional_usd` / `call_notional_usd`, because a market-making firm once appeared as a $41B
 utility's largest holder while owning **67 shares** (the rest was puts and calls).
 
+### T7 — One manager's own book
+
+**Purpose.** The inverse of T6: a single manager's entire disclosed 13F portfolio, as a star. Added
+after rehearsal, because reciting a portfolio aloud does not land — letting the audience count the
+nodes does.
+
+**Verified: 24 rows.**
+
+```cypher
+MATCH (m:InstitutionalManager {name: $manager})-[h:HOLDS]->(c:Company)
+RETURN m, h, c
+ORDER BY h.value_usd DESC
+LIMIT 30
+```
+
+Default: `manager = 'NVIDIA CORP'` — 11 distinct issuers over 24 `HOLDS` edges, because 13F is
+quarterly and the same holding reappears each period. **That gap between node count and edge count is
+worth explaining rather than hiding:** a small book showing more edges than names is the quarterly
+cadence, not a data error.
+
+**No `holds_count` guard is needed here** because the manager is named explicitly rather than matched
+in bulk — but `LIMIT 30` still caps it, so pointing this at an index giant truncates rather than
+hangs. Use it on a strategic book, not on Vanguard.
+
 ---
 
 ## 6. Scene Actions
@@ -399,6 +423,7 @@ build stamped in `results/secgraph_freshness.json`. Counts move when the graph i
 re-derive rather than trusting this file, and prefer `scripts/validate_graph_schema.py` over any
 number written here.
 
+Demo runbook (how to present this perspective): [`demo_runbook_bloom.md`](demo_runbook_bloom.md) ·
 Property sources: [`data_sources_and_forms.md`](data_sources_and_forms.md) ·
 Field reference: [`graph_schema.md`](graph_schema.md) ·
-Walkthrough: [`demo_script_governance_desk.md`](demo_script_governance_desk.md)
+MCP walkthrough: [`demo_script_governance_desk.md`](demo_script_governance_desk.md)
