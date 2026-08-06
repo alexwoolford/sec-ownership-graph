@@ -26,19 +26,73 @@ details are in [`bloom_perspective_spec.md`](bloom_perspective_spec.md).
 
 ---
 
+## Act 0 — pre-flight, every single time
+
+Found the hard way during an end-to-end rehearsal. Skip any of these and the demo misfires in a way
+the audience will notice.
+
+1. **Switch the database.** A fresh browser session opens Bloom on `neo4j` with an **empty
+   Perspectives gallery**. Top bar → Database → scroll → `secgraph`. The perspective then auto-opens.
+   Takes ~30 seconds; do it before anyone is watching.
+2. **Set the layout to `Force-based layout 1`.** Bottom-right dropdown. **Not** layout 2 — see the
+   Act 1b warning. Layout is scene state and does not reliably persist; it has silently reset to
+   `Hierarchical` between sessions.
+3. **Confirm `HOLDS` is visible** before Act 2. Perspective designer → Relationships → the eye next
+   to `HOLDS`. If it is off, Act 2 shows unconnected floating nodes and gives you no error to explain
+   why.
+4. **Clear the scene** — right-click empty canvas → **Clear Scene (⌘⌫)**. Same gesture you will use
+   between every act.
+
+### The single most useful technique in this document
+
+**To find a named node, don't hunt the canvas — use the Card list.**
+
+Bottom-left **Card list** → wait ~5s to populate → type into **"Find nodes and relationships"**.
+Typing `DEUTSCHE` against Act 3's 74 items narrows to exactly one card, showing `name`, `cik` and
+`owner_key` as readable text. There is also a **Sort by…** control.
+
+This matters because several acts render as *many small disconnected pairs* with labels too small to
+read. Act 3 is 25 separate holder→company pairs; locating one by eye at presentation speed is not
+realistic. It also answers "can the audience actually see the 57.6%?" — the card shows properties as
+text.
+
+**Use it for Acts 3, 4 and 6.** Acts 1, 2 and 5 are single-centre topologies and read fine on canvas.
+
+**Four handling notes that will otherwise bite you live:**
+
+- **Clear Scene can silently fail.** If a panel such as the Card list is open, the right-click menu
+  shifts and your click lands on the wrong item — the next act then stacks on the previous one.
+  **Always confirm the Card list counter reads `(0/0)` before starting an act.** In rehearsal, Act 4
+  ran on top of Act 3 and reported 162 cards.
+- **The X in the search box does NOT clear the scene.** It clears the search text only.
+- **Wait ~3 seconds after any search before right-clicking a node.** The force layout keeps moving
+  nodes after results land; right-click too early and you get the *canvas* menu instead of the node
+  menu.
+- **Expect to adjust zoom after every Scene Action.** Bloom does not rescale to fit. After Act 1 you
+  will be at ~290% with labels overlapping — Zoom out twice. After Act 2 you will be too far out.
+  Neither is a bug; build the gesture into muscle memory.
+
+**Card list capacity limit (measured).** It populates fine at 74 and 88 items and renders an **empty
+panel at 121 and 192**. So the lookup technique is unavailable on the largest scenes — which is why
+Act 6 uses a higher `$minBetweenness`, and why `0000004904` is the safer cluster anchor when you need
+name lookup.
+
+---
+
 ## Before you start — four things
 
 **1. `HOLDS` is visible, and that is a standing hazard.** The perspective hides `OFFICER_OF` and
 `TEN_PCT_OWNER_OF` but **not** `HOLDS`, which has 6.7M edges and a maximum of 5,643 distinct issuers
 on a single manager. See [`bloom_perspective_spec.md` §3](bloom_perspective_spec.md) for why this is
-a known, documented deviation.
+a known, documented deviation. Act 2 needs `HOLDS` visible, so leave it on for the demo and know the
+rule below.
 
 > **The one rule for the whole demo: never right-click → Expand a green `InstitutionalManager`
 > node.** All four `Company` Scene Actions are degree-guarded (`m.holds_count < 500`) and the T6
 > search is too. Manual expand is not guarded, and it will hang the browser mid-demo.
 
-**2. Clear the scene between acts.** Click the canvas, `Cmd+A`, `Cmd+H`. Bloom persists scene state
-across reloads, so a leftover 500-node scene will be waiting next time.
+**2. Clear the scene between acts** — right-click canvas → **Clear Scene (⌘⌫)**, then confirm the
+Card list reads `(0/0)`. Bloom persists scene state across reloads.
 
 **3. Say the caveat before someone else finds it.** There is no prediction in this graph. The alpha
 question was tested and came back null — 13Ds are public the moment they land. Leading with that
@@ -64,7 +118,10 @@ One blue node: `DJT`. The inspector shows `ticker DJT`, `sector Services`, `cik 
 
 ### 1a. Who owns it
 
-Right-click DJT → **Scene actions → Show 13D/G filers** — 14 filers fan out.
+Right-click DJT → **Scene actions → Show 13D/G filers**, then **Zoom out twice**.
+
+**13 filer nodes on 14 edges** — ARC Global Investments II LLC filed both a 13D and a 13G, so it
+appears once as a node carrying two edges.
 
 | Filer | Form | Stake | Filed |
 | --- | --- | --- | --- |
@@ -86,6 +143,14 @@ partition them on `filing_type` and `filing_date` without reading any of them.
 ### 1b. Who runs it
 
 Right-click DJT → **Scene actions → Show directors** — 11 amber person-nodes.
+
+> ⚠️ **This is where the demo breaks on `Force-based layout 2`.** The 13 filers already sit in a ring
+> around DJT, and the 11 directors get placed *inside* that ring — piled on each other and on DJT,
+> illegible. The names become unreadable smudges and the beat is lost.
+>
+> **Fix:** be on `Force-based layout 1` from the start (Act 0, step 2). If you forget, recover live by
+> opening the layout dropdown and picking layout 1 — it re-runs and separates everything cleanly in
+> about five seconds. Nobody will notice.
 
 Patel Kashyap · Lighthizer Robert · McMahon Linda E. · Bernhardt David Longly · Nunes Devin G. ·
 EPSHTEYN BORIS · Trump Donald J. JR · Swider Eric · Green W. Kyle · Holding George Edward Bell ·
@@ -146,10 +211,26 @@ Captions carry `holds_count`:
 | Proficio Capital Partners LLC | 337 | $2.44B |
 | Situational Awareness LP | 39 | $0.56B |
 
-Then show NVIDIA's entire disclosed book — 11 distinct issuers, newest quarter per name:
+### 2b. Show the portfolio — don't recite it
+
+**Clear the scene**, then type `What does NVIDIA CORP hold` → Enter. **Zoom in ~3 clicks** — this one
+lands too far out, unlike Act 1.
+
+> This is Bloom's **natural-language search**, not one of the six saved phrases. If it does not
+> resolve, fall back to the numbers below, or right-click the NVIDIA node from 2a. Worth a dry run:
+> NL search depends on Bloom's own interpretation, not on the committed perspective.
+
+A clean star: NVIDIA CORP at the centre, **11 Company nodes on 24 `HOLDS` edges** — more edges than
+nodes because 13F is quarterly and the same holding reappears each period. Intel is the largest node;
+the anchor-cluster colours separate the datacenter names from the semiconductor names.
+
+Newest quarter per name:
 
 **INTC $9.48B · CRWV $3.96B · SNPS $2.26B · COHR $1.86B · NOK $1.34B · ARM $0.18B · APLD $0.18B ·
 NBIS $0.13B · RXRX $0.04B · WRD $0.02B · GENB $0.01B**
+
+Same fact as the table, but now the audience counts the nodes themselves. **Eleven.** That lands
+harder than a figure read aloud.
 
 **What to point out.** `holds_count = 11` is the observation. A diversified manager holds hundreds of
 names; this book holds eleven, and the composition overlaps NVIDIA's own commercial relationships —
@@ -230,6 +311,12 @@ answer with a recursive CTE or an application-side loop — don't overclaim, you
 in the room.** The advantage is one declarative indexed pattern executed next to the data, with the
 traversal depth decided by the data rather than written into the query.
 
+**Show the shared CIK rather than explaining it.** Open the **Card list** and filter `Embraer` — you
+get three cards: `Embraer Aircraft Holding` (BeneficialOwner), `EMBJ` (Company, cik **0001355444**)
+and `EMBRAER S.A.` (BeneficialOwner, cik **0001355444**). **The same CIK on a `Company` card and a
+`BeneficialOwner` card, visible as text.** That is `SAME_ENTITY_AS` on screen, and it lands better
+than the abstract explanation. Filtering `CONTRAN` gives one card, cik `0000024240`.
+
 **State the limits immediately.** The largest leaf in any verified chain is **TNK at $1.44B** — every
 one of these is a small- or micro-cap structure, so this is a governance and minority-holder-risk
 screen, not a large-cap feature. And roughly half of all `CONTROLS` edges predate 2020: Goldcorp
@@ -277,10 +364,25 @@ from 22 to 16.
 
 ## Act 6 — Louvain over board interlocks
 
-**Type:** `Interlock cluster 0000004904` → Enter
+**Type:** `Interlock cluster 0000001750` → Enter
 
-A dense mesh of `SHARES_DIRECTOR` edges. `LIMIT 100` renders roughly 90 node slots — use
-`0000004904` for something that fits one screen, `0000001750` for the largest cluster.
+A dense mesh of `SHARES_DIRECTOR` edges — **93 distinct Company nodes**, with **JPM rendering as a
+central hub** (edges to AAPL, AMZN, F, GD, HSY, HUM, IBM, INTU, JNJ, MET and more). Tickers are
+legible around 106% zoom. Use `0000004904` instead if you need Card-list name lookup, since the panel
+goes blank above ~120 items.
+
+> **This act had a real defect, now fixed in the committed perspective.** The saved search used to be
+> `RETURN c, r, o LIMIT 100` with **no `ORDER BY`**, so it returned an arbitrary 100 edges out of a
+> 747-member community and the largest members did not reliably appear. A verified run surfaced AAPL,
+> JNJ, CVX, NKE, SBUX and MU — a consumer/tech slice — with only 4 of the 6 money-centre banks, by
+> luck. Announcing "here's the banking community" over that screen is the worst available outcome.
+>
+> The template now reads `ORDER BY coalesce(c.size_usd, 0) DESC LIMIT 100`, which returns **all six**
+> banks and 8 focused companies instead of 76 scattered ones. **The `coalesce` is not decoration:**
+> Cypher sorts NULL *first* on `DESC`, so the 17% of companies with no size figure would otherwise
+> crowd out the banks entirely — the same trap as the custodial `coalesce` in Act 5, in a new place.
+>
+> If you imported the perspective before this fix, re-import it.
 
 Five communities from one Louvain run, with **cluster membership** (not render count):
 
@@ -305,15 +407,29 @@ sector — a more defensible claim than "we rediscovered GICS", and the one the 
 
 ### The kicker: centrality does not track size
 
-**Type:** `Broker boards above 55000` → Enter
+**Type:** `Broker boards above 120000` → Enter
+
+> **Use `120000`, not the `55000` p99.** At 55000, **47** companies qualify and the scene is too
+> crowded to find XOS — and the Card list will not rescue you, because it goes blank above ~120 items.
+> At 120000 exactly **7** companies qualify, so XOS is the visible headline, which is the whole point
+> of this beat.
+
+The seven at ≥120000, in order: **XOS · IFF · PBI · FLGT · FTNT · ASTH · EL**.
 
 | Company | Betweenness | Interlocks | Size |
 | --- | --- | --- | --- |
 | **XOS, Inc.** | 156,509 | 18 | **$0.1B** |
 | INTERNATIONAL FLAVORS | 136,074 | 32 | $25.5B |
 | PITNEY BOWES | 135,914 | 25 | $3.2B |
+| Fulgent Genetics | 135,387 | — | $1.2B |
 | Fortinet | 132,392 | 19 | $10.4B |
+| Astrana Health | 128,061 | — | $2.2B |
 | ESTÉE LAUDER | 122,073 | 17 | $19.6B |
+
+For contrast, drop the threshold to see where the large caps land:
+
+| Company | Betweenness | Interlocks | Size |
+| --- | --- | --- | --- |
 | **CISCO SYSTEMS** | 91,770 | 31 | **$123.4B** |
 | CARDINAL HEALTH | 84,957 | 25 | $58.1B |
 
@@ -364,8 +480,8 @@ The perspective stores **no default parameter values**, so type them. Phrases ve
 | `Who can move this company at tier $minTier and size $minSize` | 25, 1000000000 |
 | `Transitive control chain` | — |
 | `Activist coalition around $filerName` | ICAHN CARL C |
-| `Broker boards above $minBetweenness` | 55000 |
-| `Interlock cluster $anchor` | 0000004904 or 0000001750 |
+| `Broker boards above $minBetweenness` | **120000** (not the 55000 p99 — see Act 6) |
+| `Interlock cluster $anchor` | 0000001750, or 0000004904 for Card-list lookup |
 | `Institutional holders of $ticker under $maxHoldings holdings` | CRWV or MNRO, 500 |
 
 Scene Action names verbatim, with the category each is scoped to:
@@ -374,13 +490,38 @@ Scene Action names verbatim, with the category each is scoped to:
 | --- | --- | --- |
 | `Expand board interlocks` | Company | 7 rows (DJT) |
 | `Show directors` | Company | 11 rows (DJT) |
-| `Show 13D/G filers` | Company | 14 rows (DJT) |
-| `Show top holders (degree-guarded)` | Company | 20 rows (CRWV) |
-| `This filer's targets` | BeneficialOwner | — |
+| `Show 13D/G filers` | Company | 14 edges / 13 filer nodes (DJT) |
+| `Show top holders (degree-guarded)` | Company | 20 edges / 9 managers (CRWV) |
+| `This filer's targets` | BeneficialOwner | 24 targets (HIGHBRIDGE CAPITAL) |
 | `Co-targeting peers` | BeneficialOwner | 3 (ICAHN CARL C) |
 | `Other boards this person sits on` | Insider | 3 (Trump Donald J. JR) |
 
 A `Company` node offers exactly four actions, a `BeneficialOwner` two, an `Insider` one.
+
+---
+
+## Verification tiers — read this before you present
+
+Be honest with yourself about which claims you have personally watched render. Everything in this
+runbook is Cypher-verified; that is not the same as UI-verified.
+
+**Tier 1 — seen on the Bloom canvas, labels read off screen.** Act 1 in full (all three actions, both
+layouts, fresh session) · Act 2 including 2b (11 Company nodes, `HOLDS` edges drawn, clean star) ·
+Act 5 (coalition component and the 3-peer contrast) · Act 4 (88 cards / 27 BeneficialOwner / 21
+Company, with the shared Embraer CIK legible in the cards) · Act 6's cluster **after the ORDER BY
+fix** (93 Company nodes, JPM as a visible hub). Safe to assert.
+
+Act 3 is verified as far as: the query runs (25 `INFLUENCES`, 49 nodes), it renders as scattered
+pairs, and Deutsche Telekom is reliably locatable via the Card-list filter (74 items → 1). Liberty
+Broadband → CHTR was also legible directly on canvas at 100% zoom.
+
+**Tier 2 — one item outstanding.** `Broker boards above 55000` runs (121 cards / 61 Company) but
+**XOS was never visually located**, and the Card list cannot help at that size. The recommended
+`120000` threshold should make XOS the obvious headline — **that has not been run in Bloom.** Do it
+once before presenting Act 6's kicker.
+
+**Tier 3 — not measured.** No unbroken six-act run against a stopwatch. The "~18 minutes" at the top
+is an estimate.
 
 ---
 
