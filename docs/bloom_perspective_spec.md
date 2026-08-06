@@ -399,6 +399,7 @@ build stamped in `results/secgraph_freshness.json`. Counts move when the graph i
 re-derive rather than trusting this file, and prefer `scripts/validate_graph_schema.py` over any
 number written here.
 
+Demo runbook (how to present this perspective): [`demo_runbook_bloom.md`](demo_runbook_bloom.md) ·
 Property sources: [`data_sources_and_forms.md`](data_sources_and_forms.md) ·
 Field reference: [`graph_schema.md`](graph_schema.md) ·
-Walkthrough: [`demo_script_governance_desk.md`](demo_script_governance_desk.md)
+MCP walkthrough: [`demo_script_governance_desk.md`](demo_script_governance_desk.md)

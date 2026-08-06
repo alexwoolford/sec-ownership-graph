@@ -151,6 +151,7 @@ references something undeclared.
 
 **Architecture detail: [`docs/reference_architecture_secgraph.md`](docs/reference_architecture_secgraph.md)**
 **What the forms mean and where each element came from: [`docs/data_sources_and_forms.md`](docs/data_sources_and_forms.md)**
+**Bloom demo runbook (six acts, ~18 min): [`docs/demo_runbook_bloom.md`](docs/demo_runbook_bloom.md)**
 **Bloom visualization build brief: [`docs/bloom_perspective_spec.md`](docs/bloom_perspective_spec.md)**
 **Field-level schema (generated): [`docs/graph_schema.md`](docs/graph_schema.md)**
 
