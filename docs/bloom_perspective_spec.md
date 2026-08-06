@@ -7,6 +7,14 @@ with questions.*
 
 **Target:** Neo4j Bloom 2.21.x against database `secgraph` (Neo4j 2026.05 Enterprise + GDS).
 
+> **This has been built.** The resulting perspective is committed at
+> [`bloom/SEC Ownership Graph - governance desk.json`](../bloom/SEC%20Ownership%20Graph%20-%20governance%20desk.json)
+> — 4 categories, 10 relationship types, 6 saved searches, 7 Scene Actions. Import it via Bloom's
+> perspective drawer (**Import perspective**) rather than rebuilding from this document.
+>
+> This spec is now two things: the brief that produced that file, and the reference explaining *why*
+> each query is shaped the way it is. One deviation is outstanding — see §3 on `HOLDS`.
+
 ---
 
 ## 0. Read this first — three things that will otherwise waste your time
@@ -102,11 +110,19 @@ Set `hideUncategorisedData: true`.
 
 ### Hidden relationship types
 
-`hiddenRelationshipTypes: ["HOLDS"]`
+`hiddenRelationshipTypes: ["HOLDS", "OFFICER_OF", "TEN_PCT_OWNER_OF"]`
 
-Non-negotiable — see §0.2. Also consider hiding `OFFICER_OF` (43,091) and `TEN_PCT_OWNER_OF` by
-default: they are true and useful but they crowd every board view. `DIRECTOR_OF` stays visible; it is
-half of the two-limb story.
+`HOLDS` matters most — see §0.2. `OFFICER_OF` (43,091) and `TEN_PCT_OWNER_OF` are true and useful but
+crowd every board view. `DIRECTOR_OF` stays visible; it is half of the two-limb story.
+
+> **Known deviation in the shipped perspective.** The committed
+> [`bloom/SEC Ownership Graph - governance desk.json`](../bloom/SEC%20Ownership%20Graph%20-%20governance%20desk.json)
+> hides `OFFICER_OF` and `TEN_PCT_OWNER_OF` but **not `HOLDS`**. The realistic path is still safe:
+> the only Scene Action that touches `HOLDS` ("Show top holders") carries the `holds_count` guard,
+> and template T6 filters on it too. The residual risk is a user **manually** expanding a large
+> `InstitutionalManager` from the right-click menu, which can pull thousands of nodes and hang the
+> browser. Until the perspective is re-exported with `HOLDS` hidden, don't expand a manager node by
+> hand during a demo — and know that the guard is on the queries, not on the UI.
 
 ---
 
@@ -365,7 +381,7 @@ Not fine print — this is what makes the rest credible, and a finance audience 
 - [ ] `python scripts/validate_graph_schema.py --database secgraph` exits 0
 - [ ] Search finds `MONRO, INC.` for "monro" and three entities for "icahn"
 - [ ] All four categories have distinct colour + icon; people read differently from institutions
-- [ ] `HOLDS` is hidden by default
+- [ ] `HOLDS` is hidden by default — **currently NOT met** in the committed perspective; see §3
 - [ ] Node size varies by `interlock_betweenness`; unmeasured companies render small, not zero-sized
 - [ ] The five anchor clusters have distinct colours; nothing colours by raw `interlock_community`
 - [ ] `size_source` is visible somewhere on a sized node
