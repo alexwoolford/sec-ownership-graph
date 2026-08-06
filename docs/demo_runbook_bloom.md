@@ -216,9 +216,8 @@ Captions carry `holds_count`:
 **Clear the scene**, then type `What does NVIDIA CORP hold` → Enter. **Zoom in ~3 clicks** — this one
 lands too far out, unlike Act 1.
 
-> This is Bloom's **natural-language search**, not one of the six saved phrases. If it does not
-> resolve, fall back to the numbers below, or right-click the NVIDIA node from 2a. Worth a dry run:
-> NL search depends on Bloom's own interpretation, not on the committed perspective.
+This is a **saved search** (`What does $manager hold`), not Bloom's natural-language interpretation,
+so it resolves the same way every time. Verified: 24 rows.
 
 A clean star: NVIDIA CORP at the centre, **11 Company nodes on 24 `HOLDS` edges** — more edges than
 nodes because 13F is quarterly and the same holding reappears each period. Intel is the largest node;
@@ -475,14 +474,15 @@ These are what make the rest credible, and a finance audience will test them.
 
 The perspective stores **no default parameter values**, so type them. Phrases verbatim:
 
-| Search phrase | Parameters |
-| --- | --- |
-| `Who can move this company at tier $minTier and size $minSize` | 25, 1000000000 |
-| `Transitive control chain` | — |
-| `Activist coalition around $filerName` | ICAHN CARL C |
-| `Broker boards above $minBetweenness` | **120000** (not the 55000 p99 — see Act 6) |
-| `Interlock cluster $anchor` | 0000001750, or 0000004904 for Card-list lookup |
-| `Institutional holders of $ticker under $maxHoldings holdings` | CRWV or MNRO, 500 |
+| Search phrase | Parameters | Act | Verified |
+| --- | --- | --- | --- |
+| `Who can move this company at tier $minTier and size $minSize` | 25, 1000000000 | 3 | 25 rows |
+| `Transitive control chain` | — | 4 | 25 rows |
+| `Activist coalition around $filerName` | ICAHN CARL C | 5 | 43 rows |
+| `Broker boards above $minBetweenness` | **120000** (not the 55000 p99 — see Act 6) | 6 | 60 rows |
+| `Interlock cluster $anchor` | 0000001750, or 0000004904 for Card-list lookup | 6 | 100 rows |
+| `Institutional holders of $ticker under $maxHoldings holdings` | CRWV or MNRO, 500 | 2 | 20 rows |
+| `What does $manager hold` | NVIDIA CORP | 2b | 24 rows |
 
 Scene Action names verbatim, with the category each is scoped to:
 
